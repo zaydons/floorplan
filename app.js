@@ -1,0 +1,1064 @@
+'use strict';
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const GRID_SIZE = 20;
+const MIN_ZOOM  = 0.1;
+const MAX_ZOOM  = 10;
+const HANDLE_R  = 5;
+
+const LAYER_COLORS = [
+  '#7c6aff','#ff6a6a','#6affb0','#ffca6a','#6ab8ff','#ff6adb','#a8ff6a','#ff976a'
+];
+
+// ── State ────────────────────────────────────────────────────────────────────
+const state = {
+  tool: 'select',
+  layers: [],          // { id, name, visible, color, shapes: [] }
+  activeLayerId: null,
+  zoom: 1,
+  pan: { x: 0, y: 0 },
+  showGrid: true,
+  snapToGrid: true,
+  history: [],         // snapshots for undo
+  future: [],          // snapshots for redo
+  selection: [],       // selected shape ids
+  props: {
+    stroke: '#1a1a2e',
+    strokeWidth: 2,
+    fill: '#ffffff',
+    fillEnabled: false,
+    dash: 'solid',
+    fontSize: 14,
+  },
+};
+
+// Drawing interaction state
+const drag = {
+  active: false,
+  startX: 0, startY: 0,
+  lastX: 0,  lastY: 0,
+  polyPoints: [],      // for polygon tool
+  shape: null,         // shape being drawn (preview)
+};
+
+let textPending = null; // { x, y } while text input is open
+
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const gridCanvas    = document.getElementById('gridCanvas');
+const mainCanvas    = document.getElementById('mainCanvas');
+const overlayCanvas = document.getElementById('overlayCanvas');
+const gCtx  = gridCanvas.getContext('2d');
+const mCtx  = mainCanvas.getContext('2d');
+const oCtx  = overlayCanvas.getContext('2d');
+const layersList      = document.getElementById('layers-list');
+const zoomIndicator   = document.getElementById('zoom-indicator');
+const coordsIndicator = document.getElementById('coords-indicator');
+const selectionProps  = document.getElementById('selectionProps');
+const moveToLayerSel  = document.getElementById('moveToLayer');
+const textInput       = document.getElementById('textInput');
+const modalOverlay    = document.getElementById('modal-overlay');
+const modalInput      = document.getElementById('modal-input');
+const textPropRow     = document.getElementById('textPropRow');
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
+function snap(v) {
+  if (!state.snapToGrid) return v;
+  return Math.round(v / GRID_SIZE) * GRID_SIZE;
+}
+
+function screenToWorld(sx, sy) {
+  return {
+    x: (sx - state.pan.x) / state.zoom,
+    y: (sy - state.pan.y) / state.zoom,
+  };
+}
+
+function worldToScreen(wx, wy) {
+  return {
+    x: wx * state.zoom + state.pan.x,
+    y: wy * state.zoom + state.pan.y,
+  };
+}
+
+function getCanvasPos(e) {
+  const r = overlayCanvas.getBoundingClientRect();
+  const sx = (e.clientX ?? e.touches[0].clientX) - r.left;
+  const sy = (e.clientY ?? e.touches[0].clientY) - r.top;
+  const w  = screenToWorld(sx, sy);
+  return { sx, sy, wx: snap(w.x), wy: snap(w.y), rawX: w.x, rawY: w.y };
+}
+
+function resizeCanvases() {
+  const container = document.getElementById('canvas-container');
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+  [gridCanvas, mainCanvas, overlayCanvas].forEach(c => {
+    c.width  = W;
+    c.height = H;
+  });
+  redrawAll();
+}
+
+// ── Layer helpers ─────────────────────────────────────────────────────────────
+function activeLayer() {
+  return state.layers.find(l => l.id === state.activeLayerId) || null;
+}
+
+function addLayer(name, color) {
+  const layer = {
+    id: uid(),
+    name: name || `Layer ${state.layers.length + 1}`,
+    visible: true,
+    color: color || LAYER_COLORS[state.layers.length % LAYER_COLORS.length],
+    shapes: [],
+  };
+  state.layers.unshift(layer);
+  state.activeLayerId = layer.id;
+  saveHistory();
+  renderLayers();
+  updateMoveToLayer();
+  return layer;
+}
+
+function findShapeById(id) {
+  for (const layer of state.layers) {
+    const shape = layer.shapes.find(s => s.id === id);
+    if (shape) return { layer, shape };
+  }
+  return null;
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+function snapshot() {
+  return JSON.stringify({ layers: state.layers, activeLayerId: state.activeLayerId });
+}
+
+function saveHistory() {
+  state.history.push(snapshot());
+  if (state.history.length > 100) state.history.shift();
+  state.future = [];
+}
+
+function undo() {
+  if (state.history.length < 2) return;
+  state.future.push(state.history.pop());
+  const prev = state.history[state.history.length - 1];
+  const parsed = JSON.parse(prev);
+  state.layers = parsed.layers;
+  state.activeLayerId = parsed.activeLayerId;
+  state.selection = [];
+  renderLayers();
+  updateMoveToLayer();
+  redrawAll();
+}
+
+function redo() {
+  if (!state.future.length) return;
+  const next = state.future.pop();
+  state.history.push(next);
+  const parsed = JSON.parse(next);
+  state.layers = parsed.layers;
+  state.activeLayerId = parsed.activeLayerId;
+  state.selection = [];
+  renderLayers();
+  updateMoveToLayer();
+  redrawAll();
+}
+
+// ── Shape drawing ─────────────────────────────────────────────────────────────
+function applyStyle(ctx, shape, layerColor, scale) {
+  ctx.strokeStyle = shape.stroke;
+  ctx.lineWidth   = shape.strokeWidth / scale;
+  ctx.fillStyle   = shape.fill;
+
+  if (shape.dash === 'dashed') ctx.setLineDash([8 / scale, 4 / scale]);
+  else if (shape.dash === 'dotted') ctx.setLineDash([2 / scale, 4 / scale]);
+  else ctx.setLineDash([]);
+}
+
+function drawShape(ctx, shape, layerColor, scale = 1) {
+  ctx.save();
+  applyStyle(ctx, shape, layerColor, scale);
+
+  switch (shape.type) {
+    case 'line': {
+      ctx.beginPath();
+      ctx.moveTo(shape.x1, shape.y1);
+      ctx.lineTo(shape.x2, shape.y2);
+      ctx.stroke();
+      break;
+    }
+    case 'rect': {
+      const x = Math.min(shape.x1, shape.x2);
+      const y = Math.min(shape.y1, shape.y2);
+      const w = Math.abs(shape.x2 - shape.x1);
+      const h = Math.abs(shape.y2 - shape.y1);
+      if (shape.fillEnabled) { ctx.fillStyle = shape.fill; ctx.fillRect(x, y, w, h); }
+      ctx.strokeRect(x, y, w, h);
+      break;
+    }
+    case 'circle': {
+      const cx = (shape.x1 + shape.x2) / 2;
+      const cy = (shape.y1 + shape.y2) / 2;
+      const rx = Math.abs(shape.x2 - shape.x1) / 2;
+      const ry = Math.abs(shape.y2 - shape.y1) / 2;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      if (shape.fillEnabled) { ctx.fillStyle = shape.fill; ctx.fill(); }
+      ctx.stroke();
+      break;
+    }
+    case 'polygon': {
+      if (!shape.points || shape.points.length < 2) break;
+      ctx.beginPath();
+      ctx.moveTo(shape.points[0].x, shape.points[0].y);
+      for (let i = 1; i < shape.points.length; i++) {
+        ctx.lineTo(shape.points[i].x, shape.points[i].y);
+      }
+      if (shape.closed) {
+        ctx.closePath();
+        if (shape.fillEnabled) { ctx.fillStyle = shape.fill; ctx.fill(); }
+      }
+      ctx.stroke();
+      break;
+    }
+    case 'text': {
+      ctx.fillStyle = shape.stroke;
+      ctx.font = `${shape.fontSize || 14}px -apple-system, sans-serif`;
+      ctx.fillText(shape.text, shape.x, shape.y);
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+function shapeBounds(shape) {
+  switch (shape.type) {
+    case 'line':
+      return {
+        x: Math.min(shape.x1, shape.x2) - 4,
+        y: Math.min(shape.y1, shape.y2) - 4,
+        w: Math.abs(shape.x2 - shape.x1) + 8,
+        h: Math.abs(shape.y2 - shape.y1) + 8,
+      };
+    case 'rect':
+    case 'circle': {
+      const x = Math.min(shape.x1, shape.x2);
+      const y = Math.min(shape.y1, shape.y2);
+      return {
+        x: x - 4,
+        y: y - 4,
+        w: Math.abs(shape.x2 - shape.x1) + 8,
+        h: Math.abs(shape.y2 - shape.y1) + 8,
+      };
+    }
+    case 'polygon': {
+      if (!shape.points.length) return { x: 0, y: 0, w: 0, h: 0 };
+      const xs = shape.points.map(p => p.x);
+      const ys = shape.points.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      return { x: minX - 4, y: minY - 4, w: maxX - minX + 8, h: maxY - minY + 8 };
+    }
+    case 'text':
+      return { x: shape.x - 4, y: shape.y - 20, w: 120, h: 24 };
+    default:
+      return { x: 0, y: 0, w: 0, h: 0 };
+  }
+}
+
+function hitTest(shape, wx, wy) {
+  const b = shapeBounds(shape);
+  return wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function redrawGrid() {
+  const W = gridCanvas.width;
+  const H = gridCanvas.height;
+  gCtx.clearRect(0, 0, W, H);
+  if (!state.showGrid) return;
+
+  const step = GRID_SIZE * state.zoom;
+  const offX = state.pan.x % step;
+  const offY = state.pan.y % step;
+
+  gCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+  gCtx.lineWidth   = 1;
+
+  gCtx.beginPath();
+  for (let x = offX; x < W; x += step) {
+    gCtx.moveTo(x, 0); gCtx.lineTo(x, H);
+  }
+  for (let y = offY; y < H; y += step) {
+    gCtx.moveTo(0, y); gCtx.lineTo(W, y);
+  }
+  gCtx.stroke();
+
+  // Major grid every 5 cells
+  const majorStep = step * 5;
+  const majOffX   = state.pan.x % majorStep;
+  const majOffY   = state.pan.y % majorStep;
+  gCtx.strokeStyle = 'rgba(255,255,255,0.1)';
+  gCtx.beginPath();
+  for (let x = majOffX; x < W; x += majorStep) {
+    gCtx.moveTo(x, 0); gCtx.lineTo(x, H);
+  }
+  for (let y = majOffY; y < H; y += majorStep) {
+    gCtx.moveTo(0, y); gCtx.lineTo(W, y);
+  }
+  gCtx.stroke();
+}
+
+function redrawMain() {
+  const W = mainCanvas.width;
+  const H = mainCanvas.height;
+  mCtx.clearRect(0, 0, W, H);
+  mCtx.save();
+  mCtx.translate(state.pan.x, state.pan.y);
+  mCtx.scale(state.zoom, state.zoom);
+
+  // Draw layers bottom-to-top (array index 0 = top layer visually, render reversed)
+  for (let i = state.layers.length - 1; i >= 0; i--) {
+    const layer = state.layers[i];
+    if (!layer.visible) continue;
+    for (const shape of layer.shapes) {
+      drawShape(mCtx, shape, layer.color, state.zoom);
+    }
+  }
+  mCtx.restore();
+}
+
+function redrawOverlay() {
+  const W = overlayCanvas.width;
+  const H = overlayCanvas.height;
+  oCtx.clearRect(0, 0, W, H);
+
+  if (!state.selection.length && !drag.shape && !drag.polyPoints.length) return;
+
+  oCtx.save();
+  oCtx.translate(state.pan.x, state.pan.y);
+  oCtx.scale(state.zoom, state.zoom);
+
+  // Preview shape while drawing
+  if (drag.shape) {
+    drawShape(oCtx, drag.shape, '#7c6aff', state.zoom);
+  }
+
+  // Polygon in-progress
+  if (drag.polyPoints.length) {
+    oCtx.save();
+    oCtx.strokeStyle = '#7c6aff';
+    oCtx.lineWidth   = state.props.strokeWidth / state.zoom;
+    oCtx.setLineDash([6 / state.zoom, 3 / state.zoom]);
+    oCtx.beginPath();
+    oCtx.moveTo(drag.polyPoints[0].x, drag.polyPoints[0].y);
+    for (let i = 1; i < drag.polyPoints.length; i++) {
+      oCtx.lineTo(drag.polyPoints[i].x, drag.polyPoints[i].y);
+    }
+    oCtx.stroke();
+
+    // Draw dots
+    for (const p of drag.polyPoints) {
+      oCtx.beginPath();
+      oCtx.arc(p.x, p.y, 4 / state.zoom, 0, Math.PI * 2);
+      oCtx.fillStyle = '#7c6aff';
+      oCtx.fill();
+    }
+    oCtx.restore();
+  }
+
+  // Selection highlights
+  for (const id of state.selection) {
+    const found = findShapeById(id);
+    if (!found) continue;
+    const b = shapeBounds(found.shape);
+    oCtx.save();
+    oCtx.strokeStyle = '#7c6aff';
+    oCtx.lineWidth   = 1.5 / state.zoom;
+    oCtx.setLineDash([4 / state.zoom, 3 / state.zoom]);
+    oCtx.strokeRect(b.x, b.y, b.w, b.h);
+    // Corner handles
+    oCtx.fillStyle = '#7c6aff';
+    oCtx.setLineDash([]);
+    [[b.x, b.y],[b.x+b.w, b.y],[b.x, b.y+b.h],[b.x+b.w, b.y+b.h]].forEach(([hx,hy]) => {
+      oCtx.fillRect(hx - HANDLE_R/state.zoom, hy - HANDLE_R/state.zoom, (HANDLE_R*2)/state.zoom, (HANDLE_R*2)/state.zoom);
+    });
+    oCtx.restore();
+  }
+
+  oCtx.restore();
+}
+
+function redrawAll() {
+  redrawGrid();
+  redrawMain();
+  redrawOverlay();
+  zoomIndicator.textContent = Math.round(state.zoom * 100) + '%';
+}
+
+// ── Tool cursor ───────────────────────────────────────────────────────────────
+const cursorMap = {
+  select: 'default', pan: 'grab', line: 'crosshair',
+  rect: 'crosshair', circle: 'crosshair', polygon: 'crosshair',
+  text: 'text', eraser: 'cell',
+};
+
+function setCursor(c) {
+  overlayCanvas.style.cursor = c || cursorMap[state.tool] || 'default';
+}
+
+// ── Tool switching ─────────────────────────────────────────────────────────────
+function setTool(tool) {
+  // Commit any in-progress polygon
+  commitPolygon();
+  state.tool = tool;
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+  setCursor();
+  textPropRow.style.display = tool === 'text' ? 'flex' : 'none';
+}
+
+// ── Shape creation helpers ────────────────────────────────────────────────────
+function currentShapeProps() {
+  return {
+    stroke: state.props.stroke,
+    strokeWidth: state.props.strokeWidth,
+    fill: state.props.fill,
+    fillEnabled: state.props.fillEnabled,
+    dash: state.props.dash,
+    fontSize: state.props.fontSize,
+  };
+}
+
+function startShape(wx, wy) {
+  const base = { id: uid(), ...currentShapeProps() };
+  switch (state.tool) {
+    case 'line':   return { ...base, type: 'line',   x1: wx, y1: wy, x2: wx, y2: wy };
+    case 'rect':   return { ...base, type: 'rect',   x1: wx, y1: wy, x2: wx, y2: wy };
+    case 'circle': return { ...base, type: 'circle', x1: wx, y1: wy, x2: wx, y2: wy };
+    default:       return null;
+  }
+}
+
+function updateShape(shape, wx, wy, e) {
+  if (!shape) return;
+  if (e && e.shiftKey && (shape.type === 'line' || shape.type === 'rect' || shape.type === 'circle')) {
+    const dx = wx - shape.x1;
+    const dy = wy - shape.y1;
+    if (shape.type === 'line') {
+      const angle = Math.atan2(dy, dx);
+      const snap45 = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+      const len = Math.sqrt(dx*dx + dy*dy);
+      shape.x2 = shape.x1 + Math.cos(snap45) * len;
+      shape.y2 = shape.y1 + Math.sin(snap45) * len;
+      return;
+    }
+    const side = Math.max(Math.abs(dx), Math.abs(dy));
+    shape.x2 = shape.x1 + Math.sign(dx) * side;
+    shape.y2 = shape.y1 + Math.sign(dy) * side;
+    return;
+  }
+  shape.x2 = wx;
+  shape.y2 = wy;
+}
+
+function commitPolygon(closed = false) {
+  if (!drag.polyPoints.length) return;
+  const layer = activeLayer();
+  if (!layer) { drag.polyPoints = []; redrawOverlay(); return; }
+  const shape = {
+    id: uid(), ...currentShapeProps(),
+    type: 'polygon',
+    points: [...drag.polyPoints],
+    closed,
+  };
+  layer.shapes.push(shape);
+  drag.polyPoints = [];
+  saveHistory();
+  redrawMain();
+  redrawOverlay();
+}
+
+// ── Mouse events ──────────────────────────────────────────────────────────────
+overlayCanvas.addEventListener('mousedown', onPointerDown);
+overlayCanvas.addEventListener('mousemove', onPointerMove);
+overlayCanvas.addEventListener('mouseup',   onPointerUp);
+overlayCanvas.addEventListener('dblclick',  onDblClick);
+overlayCanvas.addEventListener('contextmenu', e => { e.preventDefault(); commitPolygon(true); });
+overlayCanvas.addEventListener('wheel',     onWheel, { passive: false });
+
+function onPointerDown(e) {
+  if (e.button === 1) { drag.active = true; drag.tool = 'pan_mid'; const p = getCanvasPos(e); drag.lastX = p.sx; drag.lastY = p.sy; setCursor('grabbing'); return; }
+  const pos = getCanvasPos(e);
+  coordsIndicator.textContent = `${Math.round(pos.rawX)}, ${Math.round(pos.rawY)}`;
+
+  if (state.tool === 'pan') {
+    drag.active = true; drag.tool = 'pan';
+    drag.lastX = pos.sx; drag.lastY = pos.sy;
+    setCursor('grabbing');
+    return;
+  }
+
+  if (state.tool === 'select') {
+    // Hit test visible layers
+    let hit = null;
+    for (const layer of state.layers) {
+      if (!layer.visible) continue;
+      for (let i = layer.shapes.length - 1; i >= 0; i--) {
+        if (hitTest(layer.shapes[i], pos.wx, pos.wy)) { hit = layer.shapes[i]; break; }
+      }
+      if (hit) break;
+    }
+    if (hit) {
+      if (!e.shiftKey) state.selection = [hit.id];
+      else if (!state.selection.includes(hit.id)) state.selection.push(hit.id);
+      else state.selection = state.selection.filter(id => id !== hit.id);
+    } else {
+      state.selection = [];
+    }
+    updateSelectionPanel();
+    redrawOverlay();
+
+    // Prepare to move selection
+    if (state.selection.length) {
+      drag.active = true; drag.tool = 'move';
+      drag.lastX = pos.wx; drag.lastY = pos.wy;
+      setCursor('grabbing');
+    }
+    return;
+  }
+
+  if (state.tool === 'eraser') {
+    eraseAt(pos.wx, pos.wy);
+    drag.active = true; drag.tool = 'eraser';
+    return;
+  }
+
+  if (state.tool === 'text') {
+    openTextInput(pos);
+    return;
+  }
+
+  if (state.tool === 'polygon') {
+    drag.polyPoints.push({ x: pos.wx, y: pos.wy });
+    redrawOverlay();
+    return;
+  }
+
+  // Line, rect, circle
+  const layer = activeLayer();
+  if (!layer) return;
+  drag.active  = true;
+  drag.tool    = state.tool;
+  drag.startX  = pos.wx; drag.startY = pos.wy;
+  drag.shape   = startShape(pos.wx, pos.wy);
+}
+
+function onPointerMove(e) {
+  const pos = getCanvasPos(e);
+  coordsIndicator.textContent = `${Math.round(pos.rawX)}, ${Math.round(pos.rawY)}`;
+
+  if (drag.tool === 'pan' || drag.tool === 'pan_mid') {
+    state.pan.x += pos.sx - drag.lastX;
+    state.pan.y += pos.sy - drag.lastY;
+    drag.lastX = pos.sx; drag.lastY = pos.sy;
+    redrawAll();
+    return;
+  }
+
+  if (drag.tool === 'move' && drag.active) {
+    const dx = pos.wx - drag.lastX;
+    const dy = pos.wy - drag.lastY;
+    drag.lastX = pos.wx; drag.lastY = pos.wy;
+    for (const id of state.selection) {
+      const found = findShapeById(id);
+      if (!found) continue;
+      const s = found.shape;
+      if (s.x1 !== undefined) { s.x1 += dx; s.y1 += dy; }
+      if (s.x2 !== undefined) { s.x2 += dx; s.y2 += dy; }
+      if (s.points) s.points = s.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+      if (s.type === 'text') { s.x += dx; s.y += dy; }
+    }
+    redrawMain(); redrawOverlay();
+    return;
+  }
+
+  if (drag.tool === 'eraser' && drag.active) {
+    eraseAt(pos.wx, pos.wy);
+    return;
+  }
+
+  if (drag.active && drag.shape) {
+    updateShape(drag.shape, pos.wx, pos.wy, e);
+    redrawOverlay();
+    return;
+  }
+
+  // Polygon cursor line
+  if (state.tool === 'polygon' && drag.polyPoints.length) {
+    redrawOverlay();
+    oCtx.save();
+    oCtx.translate(state.pan.x, state.pan.y);
+    oCtx.scale(state.zoom, state.zoom);
+    oCtx.strokeStyle = 'rgba(124,106,255,0.5)';
+    oCtx.lineWidth   = state.props.strokeWidth / state.zoom;
+    oCtx.setLineDash([4 / state.zoom, 4 / state.zoom]);
+    oCtx.beginPath();
+    const last = drag.polyPoints[drag.polyPoints.length - 1];
+    oCtx.moveTo(last.x, last.y);
+    oCtx.lineTo(pos.wx, pos.wy);
+    oCtx.stroke();
+    oCtx.restore();
+  }
+}
+
+function onPointerUp(e) {
+  if (drag.tool === 'pan_mid') { drag.active = false; drag.tool = null; setCursor(); return; }
+  if (drag.tool === 'pan') { drag.active = false; drag.tool = null; setCursor(); return; }
+
+  if (drag.tool === 'move') {
+    drag.active = false; drag.tool = null; setCursor();
+    saveHistory();
+    return;
+  }
+
+  if (drag.tool === 'eraser') { drag.active = false; drag.tool = null; return; }
+
+  if (drag.active && drag.shape) {
+    const layer = activeLayer();
+    if (layer) {
+      // Don't commit zero-size shapes
+      const dx = Math.abs((drag.shape.x2 || 0) - (drag.shape.x1 || 0));
+      const dy = Math.abs((drag.shape.y2 || 0) - (drag.shape.y1 || 0));
+      if (dx > 2 || dy > 2) {
+        layer.shapes.push({ ...drag.shape });
+        saveHistory();
+      }
+    }
+    drag.shape  = null;
+    drag.active = false;
+    drag.tool   = null;
+    redrawMain();
+    redrawOverlay();
+  }
+}
+
+function onDblClick(e) {
+  if (state.tool === 'polygon') {
+    commitPolygon(false);
+  }
+}
+
+function onWheel(e) {
+  e.preventDefault();
+  const pos = getCanvasPos(e);
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, state.zoom * factor));
+  // Zoom toward cursor
+  state.pan.x = pos.sx - (pos.sx - state.pan.x) * (newZoom / state.zoom);
+  state.pan.y = pos.sy - (pos.sy - state.pan.y) * (newZoom / state.zoom);
+  state.zoom  = newZoom;
+  redrawAll();
+}
+
+// ── Eraser ────────────────────────────────────────────────────────────────────
+function eraseAt(wx, wy) {
+  let changed = false;
+  for (const layer of state.layers) {
+    if (!layer.visible) continue;
+    const before = layer.shapes.length;
+    layer.shapes = layer.shapes.filter(s => !hitTest(s, wx, wy));
+    if (layer.shapes.length !== before) changed = true;
+  }
+  if (changed) { saveHistory(); redrawMain(); }
+}
+
+// ── Text input ────────────────────────────────────────────────────────────────
+function openTextInput(pos) {
+  textPending = { wx: pos.wx, wy: pos.wy };
+  const s = worldToScreen(pos.wx, pos.wy);
+  textInput.style.display = 'block';
+  textInput.style.left    = s.x + 'px';
+  textInput.style.top     = (s.y - 24) + 'px';
+  textInput.value         = '';
+  textInput.focus();
+}
+
+textInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    commitText();
+  }
+  if (e.key === 'Escape') {
+    textInput.style.display = 'none';
+    textPending = null;
+  }
+});
+
+textInput.addEventListener('blur', () => {
+  if (textInput.value.trim()) commitText();
+  else { textInput.style.display = 'none'; textPending = null; }
+});
+
+function commitText() {
+  const val = textInput.value.trim();
+  textInput.style.display = 'none';
+  if (!val || !textPending) return;
+  const layer = activeLayer();
+  if (!layer) return;
+  layer.shapes.push({
+    id: uid(), ...currentShapeProps(),
+    type: 'text', text: val,
+    x: textPending.wx, y: textPending.wy,
+    fontSize: state.props.fontSize,
+  });
+  textPending = null;
+  saveHistory();
+  redrawMain();
+}
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key === 'z') { e.preventDefault(); undo(); return; }
+    if (e.key === 'y' || (e.shiftKey && e.key === 'z')) { e.preventDefault(); redo(); return; }
+    if (e.key === 's') { e.preventDefault(); saveFile(); return; }
+    return;
+  }
+
+  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser' };
+  if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
+
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    deleteSelected();
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (drag.polyPoints.length) { drag.polyPoints = []; redrawOverlay(); return; }
+    state.selection = []; updateSelectionPanel(); redrawOverlay();
+  }
+});
+
+// ── Selection panel ───────────────────────────────────────────────────────────
+function updateSelectionPanel() {
+  selectionProps.style.display = state.selection.length ? 'block' : 'none';
+}
+
+function deleteSelected() {
+  if (!state.selection.length) return;
+  for (const id of state.selection) {
+    for (const layer of state.layers) {
+      layer.shapes = layer.shapes.filter(s => s.id !== id);
+    }
+  }
+  state.selection = [];
+  saveHistory();
+  updateSelectionPanel();
+  redrawMain();
+  redrawOverlay();
+}
+
+document.getElementById('deleteSelBtn').addEventListener('click', deleteSelected);
+
+moveToLayerSel.addEventListener('change', () => {
+  const targetId = moveToLayerSel.value;
+  const target   = state.layers.find(l => l.id === targetId);
+  if (!target) return;
+  for (const id of state.selection) {
+    const found = findShapeById(id);
+    if (!found || found.layer.id === targetId) continue;
+    found.layer.shapes = found.layer.shapes.filter(s => s.id !== id);
+    target.shapes.push(found.shape);
+  }
+  saveHistory();
+  redrawMain();
+});
+
+function updateMoveToLayer() {
+  moveToLayerSel.innerHTML = state.layers
+    .map(l => `<option value="${l.id}">${l.name}</option>`)
+    .join('');
+}
+
+// ── Properties panel ──────────────────────────────────────────────────────────
+function bindProp(id, key, transform) {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    state.props[key] = transform ? transform(el.value) : el.value;
+    // Update selected shapes
+    for (const sid of state.selection) {
+      const found = findShapeById(sid);
+      if (found) found.shape[key] = state.props[key];
+    }
+    if (state.selection.length) { saveHistory(); redrawMain(); }
+  });
+}
+
+bindProp('propStroke',      'stroke');
+bindProp('propStrokeWidth', 'strokeWidth', parseFloat);
+bindProp('propFill',        'fill');
+bindProp('propDash',        'dash');
+bindProp('propFontSize',    'fontSize', parseInt);
+
+document.getElementById('propFillEnabled').addEventListener('change', e => {
+  state.props.fillEnabled = e.target.checked;
+  for (const sid of state.selection) {
+    const found = findShapeById(sid);
+    if (found) found.shape.fillEnabled = state.props.fillEnabled;
+  }
+  if (state.selection.length) { saveHistory(); redrawMain(); }
+});
+
+// ── Toolbar buttons ───────────────────────────────────────────────────────────
+document.querySelectorAll('.tool-btn').forEach(btn => {
+  btn.addEventListener('click', () => setTool(btn.dataset.tool));
+});
+
+document.getElementById('undoBtn').addEventListener('click', undo);
+document.getElementById('redoBtn').addEventListener('click', redo);
+
+document.getElementById('gridToggle').addEventListener('click', function () {
+  state.showGrid = !state.showGrid;
+  this.classList.toggle('active', state.showGrid);
+  redrawGrid();
+});
+
+document.getElementById('snapToggle').addEventListener('click', function () {
+  state.snapToGrid = !state.snapToGrid;
+  this.classList.toggle('active', state.snapToGrid);
+});
+
+// ── Save / Load / Export ──────────────────────────────────────────────────────
+document.getElementById('saveBtn').addEventListener('click', saveFile);
+document.getElementById('loadBtn').addEventListener('click', () => document.getElementById('loadInput').click());
+document.getElementById('loadInput').addEventListener('change', loadFile);
+document.getElementById('exportBtn').addEventListener('click', exportPNG);
+
+function saveFile() {
+  const data = JSON.stringify({ layers: state.layers }, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'floorplan.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = evt => {
+    try {
+      const data = JSON.parse(evt.target.result);
+      if (data.layers) {
+        state.layers        = data.layers;
+        state.activeLayerId = state.layers[0]?.id || null;
+        state.selection     = [];
+        saveHistory();
+        renderLayers();
+        updateMoveToLayer();
+        redrawAll();
+      }
+    } catch {
+      alert('Invalid file.');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+function exportPNG() {
+  const W = mainCanvas.width;
+  const H = mainCanvas.height;
+  const tmp = document.createElement('canvas');
+  tmp.width  = W; tmp.height = H;
+  const ctx  = tmp.getContext('2d');
+  ctx.fillStyle = '#141422';
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw grid
+  if (state.showGrid) {
+    const step  = GRID_SIZE * state.zoom;
+    const offX  = state.pan.x % step;
+    const offY  = state.pan.y % step;
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    for (let x = offX; x < W; x += step) { ctx.moveTo(x,0); ctx.lineTo(x,H); }
+    for (let y = offY; y < H; y += step) { ctx.moveTo(0,y); ctx.lineTo(W,y); }
+    ctx.stroke();
+  }
+
+  ctx.save();
+  ctx.translate(state.pan.x, state.pan.y);
+  ctx.scale(state.zoom, state.zoom);
+  for (let i = state.layers.length - 1; i >= 0; i--) {
+    const layer = state.layers[i];
+    if (!layer.visible) continue;
+    for (const shape of layer.shapes) drawShape(ctx, shape, layer.color, state.zoom);
+  }
+  ctx.restore();
+
+  tmp.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href    = url; a.download = 'floorplan.png'; a.click();
+    URL.revokeObjectURL(url);
+  });
+}
+
+// ── Layer UI ──────────────────────────────────────────────────────────────────
+document.getElementById('addLayerBtn').addEventListener('click', () => showModal());
+
+function showModal(title = 'New Layer', defaultVal = '', onOk) {
+  document.getElementById('modal-title').textContent = title;
+  modalInput.value = defaultVal;
+  modalOverlay.style.display = 'flex';
+  modalInput.focus();
+  modalInput.select();
+
+  const ok = () => {
+    const val = modalInput.value.trim();
+    modalOverlay.style.display = 'none';
+    if (onOk) onOk(val);
+    else if (val) addLayer(val);
+    else addLayer();
+    cleanup();
+  };
+
+  const cancel = () => {
+    modalOverlay.style.display = 'none';
+    cleanup();
+  };
+
+  const keydown = e => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') cancel(); };
+  document.getElementById('modal-ok').onclick     = ok;
+  document.getElementById('modal-cancel').onclick = cancel;
+  modalInput.addEventListener('keydown', keydown);
+  function cleanup() { modalInput.removeEventListener('keydown', keydown); }
+}
+
+function renderLayers() {
+  layersList.innerHTML = '';
+  state.layers.forEach((layer, index) => {
+    const item = document.createElement('div');
+    item.className = 'layer-item' + (layer.id === state.activeLayerId ? ' active' : '') + (!layer.visible ? ' hidden' : '');
+    item.dataset.id = layer.id;
+
+    // Visibility toggle
+    const vis = document.createElement('div');
+    vis.className = 'layer-visibility';
+    vis.innerHTML = layer.visible
+      ? `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+      : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+    vis.addEventListener('click', e => { e.stopPropagation(); layer.visible = !layer.visible; renderLayers(); redrawMain(); });
+
+    // Color swatch
+    const swatchWrapper = document.createElement('div');
+    swatchWrapper.style.position = 'relative';
+    const swatch = document.createElement('div');
+    swatch.className   = 'layer-swatch';
+    swatch.style.background = layer.color;
+    const colorPicker  = document.createElement('input');
+    colorPicker.type   = 'color';
+    colorPicker.value  = layer.color;
+    colorPicker.className = 'layer-color-input';
+    colorPicker.addEventListener('input', e => {
+      layer.color = e.target.value;
+      swatch.style.background = layer.color;
+    });
+    colorPicker.addEventListener('change', () => { saveHistory(); redrawAll(); });
+    swatch.addEventListener('click', e => { e.stopPropagation(); colorPicker.click(); });
+    swatchWrapper.append(swatch, colorPicker);
+
+    // Name
+    const nameEl = document.createElement('span');
+    nameEl.className   = 'layer-name';
+    nameEl.textContent = layer.name;
+    nameEl.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      showModal('Rename Layer', layer.name, val => {
+        if (val) { layer.name = val; renderLayers(); updateMoveToLayer(); saveHistory(); }
+      });
+    });
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'layer-actions';
+
+    const upBtn = document.createElement('button');
+    upBtn.className = 'layer-action-btn up';
+    upBtn.title   = 'Move up';
+    upBtn.innerHTML = '↑';
+    upBtn.addEventListener('click', e => { e.stopPropagation(); moveLayer(layer.id, -1); });
+
+    const downBtn = document.createElement('button');
+    downBtn.className = 'layer-action-btn';
+    downBtn.title   = 'Move down';
+    downBtn.innerHTML = '↓';
+    downBtn.addEventListener('click', e => { e.stopPropagation(); moveLayer(layer.id, 1); });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'layer-action-btn';
+    delBtn.title   = 'Delete layer';
+    delBtn.innerHTML = '×';
+    delBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (state.layers.length === 1) return alert('Cannot delete the last layer.');
+      if (!confirm(`Delete layer "${layer.name}" and all its shapes?`)) return;
+      state.layers = state.layers.filter(l => l.id !== layer.id);
+      if (state.activeLayerId === layer.id) state.activeLayerId = state.layers[0]?.id || null;
+      saveHistory(); renderLayers(); updateMoveToLayer(); redrawAll();
+    });
+
+    actions.append(upBtn, downBtn, delBtn);
+    item.append(vis, swatchWrapper, nameEl, actions);
+
+    item.addEventListener('click', () => {
+      state.activeLayerId = layer.id;
+      renderLayers();
+    });
+
+    layersList.appendChild(item);
+  });
+}
+
+function moveLayer(id, dir) {
+  const idx = state.layers.findIndex(l => l.id === id);
+  const to  = idx + dir;
+  if (to < 0 || to >= state.layers.length) return;
+  [state.layers[idx], state.layers[to]] = [state.layers[to], state.layers[idx]];
+  saveHistory();
+  renderLayers();
+  redrawMain();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+function init() {
+  resizeCanvases();
+  window.addEventListener('resize', resizeCanvases);
+
+  // Default layers
+  addLayer('Base / Walls', '#e0e0e0');
+  addLayer('Windows & Doors', '#6ab8ff');
+  addLayer('In-Floor Heat', '#ff976a');
+
+  // History baseline
+  state.history = [snapshot()];
+
+  renderLayers();
+  updateMoveToLayer();
+  updateSelectionPanel();
+  setTool('select');
+  redrawAll();
+}
+
+init();
