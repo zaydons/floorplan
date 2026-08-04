@@ -233,10 +233,14 @@
     <span id="measureEditUnit"></span>
   </div>
 
-  <!-- Layer name dialog -->
+  <!-- General-purpose modal: prompt / confirm / alert. Native
+       confirm()/alert()/prompt() are unreliable here — a published
+       Artifact runs in a sandboxed iframe without allow-modals, where
+       confirm() silently returns false with no dialog and no error. -->
   <div id="modal-overlay" style="display:none">
     <div id="modal">
       <div id="modal-title">New Layer</div>
+      <div id="modal-message" style="display:none"></div>
       <input type="text" id="modal-input" placeholder="Layer name">
       <div id="modal-btns">
         <button id="modal-cancel">Cancel</button>

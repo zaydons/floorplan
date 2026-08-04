@@ -595,8 +595,12 @@ function tryRestoreAutosave() {
   }
 }
 
-function clearAutosaveAndReset() {
-  if (!confirm('Start a new floorplan? This clears the current drawing and autosave. Export/Save first if you want to keep it.')) return;
+async function clearAutosaveAndReset() {
+  const ok = await confirmModal(
+    'This clears the current drawing and autosave. Export/Save first if you want to keep it.',
+    'Start a New Floorplan?'
+  );
+  if (!ok) return;
   try { localStorage.removeItem(AUTOSAVE_KEY); } catch {}
   state.layers = [];
   state.selection = [];
@@ -2319,7 +2323,7 @@ function loadFile(e) {
         redrawAll();
       }
     } catch {
-      alert('Invalid file.');
+      alertModal('That file doesn\'t look like a valid floorplan JSON file.', 'Invalid File');
     }
   };
   reader.readAsText(file);
@@ -2367,36 +2371,79 @@ function exportPNG() {
   });
 }
 
-// ── Layer UI ──────────────────────────────────────────────────────────────────
-document.getElementById('addLayerBtn').addEventListener('click', () => showModal());
+// ── Modal (prompt / confirm / alert) ────────────────────────────────────────
+// Native confirm()/alert()/prompt() are unreliable in this hosting context:
+// a published Artifact runs in a sandboxed iframe without allow-modals,
+// where confirm() just returns false immediately with no dialog shown and
+// no error — code guarded by `if (!confirm(...)) return;` silently no-ops
+// forever. This is a real in-page modal instead, Promise-based so call
+// sites read almost like the native versions did.
+const modalOkBtn     = document.getElementById('modal-ok');
+const modalCancelBtn = document.getElementById('modal-cancel');
+const modalMessageEl = document.getElementById('modal-message');
+const modalTitleEl   = document.getElementById('modal-title');
 
-function showModal(title = 'New Layer', defaultVal = '', onOk) {
-  document.getElementById('modal-title').textContent = title;
-  modalInput.value = defaultVal;
-  modalOverlay.style.display = 'flex';
-  modalInput.focus();
-  modalInput.select();
+function showModal(opts) {
+  const {
+    title = '', message = '', defaultVal = '',
+    showInput = true, okLabel = 'OK', cancelLabel = 'Cancel', showCancel = true,
+  } = opts;
 
-  const ok = () => {
-    const val = modalInput.value.trim();
-    modalOverlay.style.display = 'none';
-    if (onOk) onOk(val);
-    else if (val) addLayer(val);
-    else addLayer();
-    cleanup();
-  };
+  return new Promise(resolve => {
+    modalTitleEl.textContent = title;
+    modalMessageEl.textContent = message;
+    modalMessageEl.style.display = message ? 'block' : 'none';
 
-  const cancel = () => {
-    modalOverlay.style.display = 'none';
-    cleanup();
-  };
+    modalInput.style.display = showInput ? 'block' : 'none';
+    modalInput.value = defaultVal;
 
-  const keydown = e => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') cancel(); };
-  document.getElementById('modal-ok').onclick     = ok;
-  document.getElementById('modal-cancel').onclick = cancel;
-  modalInput.addEventListener('keydown', keydown);
-  function cleanup() { modalInput.removeEventListener('keydown', keydown); }
+    modalOkBtn.textContent = okLabel;
+    modalCancelBtn.textContent = cancelLabel;
+    modalCancelBtn.style.display = showCancel ? 'inline-block' : 'none';
+
+    modalOverlay.style.display = 'flex';
+    if (showInput) { modalInput.focus(); modalInput.select(); }
+    else modalOkBtn.focus();
+
+    const finish = result => {
+      modalOverlay.style.display = 'none';
+      document.removeEventListener('keydown', keydown);
+      modalOkBtn.onclick = null;
+      modalCancelBtn.onclick = null;
+      resolve(result);
+    };
+    const ok     = () => finish(showInput ? modalInput.value.trim() : true);
+    const cancel = () => finish(showInput ? null : false);
+    const keydown = e => {
+      if (e.key === 'Enter')  { e.preventDefault(); ok(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    };
+    modalOkBtn.onclick     = ok;
+    modalCancelBtn.onclick = cancel;
+    document.addEventListener('keydown', keydown);
+  });
 }
+
+// Resolves to the trimmed input string, or null if cancelled.
+function promptModal(title, defaultVal = '') {
+  return showModal({ title, defaultVal, showInput: true, showCancel: true });
+}
+
+// Resolves to true/false.
+function confirmModal(message, title = 'Confirm') {
+  return showModal({ title, message, showInput: false, showCancel: true });
+}
+
+// Resolves once dismissed (rarely needs awaiting — fire-and-forget is fine).
+function alertModal(message, title = 'Notice') {
+  return showModal({ title, message, showInput: false, showCancel: false });
+}
+
+// ── Layer UI ──────────────────────────────────────────────────────────────────
+document.getElementById('addLayerBtn').addEventListener('click', async () => {
+  const val = await promptModal('New Layer', '');
+  if (val !== null) addLayer(val || undefined);
+});
 
 function renderLayers() {
   layersList.innerHTML = '';
@@ -2483,11 +2530,10 @@ function renderLayerRows(nodes, depth) {
     const nameEl = document.createElement('span');
     nameEl.className   = 'layer-name';
     nameEl.textContent = layer.name;
-    nameEl.addEventListener('dblclick', e => {
+    nameEl.addEventListener('dblclick', async e => {
       e.stopPropagation();
-      showModal('Rename Layer', layer.name, val => {
-        if (val) { layer.name = val; renderLayers(); updateMoveToLayer(); saveHistory(); }
-      });
+      const val = await promptModal('Rename Layer', layer.name);
+      if (val) { layer.name = val; renderLayers(); updateMoveToLayer(); saveHistory(); }
     });
 
     // Actions
@@ -2498,9 +2544,10 @@ function renderLayerRows(nodes, depth) {
     addSubBtn.className = 'layer-action-btn add';
     addSubBtn.title   = 'Add sub-layer';
     addSubBtn.innerHTML = '+';
-    addSubBtn.addEventListener('click', e => {
+    addSubBtn.addEventListener('click', async e => {
       e.stopPropagation();
-      showModal('New Sub-layer', '', val => addLayer(val || undefined, undefined, layer.id));
+      const val = await promptModal('New Sub-layer', '');
+      if (val !== null) addLayer(val || undefined, undefined, layer.id);
     });
 
     const upBtn = document.createElement('button');
@@ -2519,14 +2566,15 @@ function renderLayerRows(nodes, depth) {
     delBtn.className = 'layer-action-btn';
     delBtn.title   = 'Delete layer';
     delBtn.innerHTML = '×';
-    delBtn.addEventListener('click', e => {
+    delBtn.addEventListener('click', async e => {
       e.stopPropagation();
-      if (countAllLayers(state.layers) === 1) return alert('Cannot delete the last layer.');
+      if (countAllLayers(state.layers) === 1) { await alertModal('Cannot delete the last layer.'); return; }
       const childCount = hasChildren ? countAllLayers(layer.children) : 0;
       const msg = childCount
         ? `Delete layer "${layer.name}", its ${childCount} sub-layer${childCount === 1 ? '' : 's'}, and all their shapes?`
         : `Delete layer "${layer.name}" and all its shapes?`;
-      if (!confirm(msg)) return;
+      const ok = await confirmModal(msg, 'Delete Layer');
+      if (!ok) return;
       const wasActiveOrAncestor = state.activeLayerId === layer.id || findLayerById(layer.children, state.activeLayerId);
       removeLayerById(state.layers, layer.id);
       if (wasActiveOrAncestor) state.activeLayerId = state.layers[0]?.id || null;

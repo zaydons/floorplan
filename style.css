@@ -708,6 +708,13 @@ hr { border-color: var(--border); margin: 6px 0; }
   font-size: 14px;
 }
 
+#modal-message {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
 #modal-input {
   width: 100%;
   background: var(--surface2);
