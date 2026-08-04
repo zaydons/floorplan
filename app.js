@@ -383,8 +383,12 @@ function findLayerById(nodes, id) {
 }
 
 // Lock cascades like visibility: a locked layer's children are also
-// effectively locked, regardless of their own flag.
+// effectively locked, regardless of their own flag. Only the active layer
+// is editable — every other layer is implicitly locked too, so switching
+// the active layer is what moves the "can edit" boundary around, on top
+// of any manual lock.
 function isLayerEffectivelyLocked(targetId) {
+  if (state.activeLayerId && targetId !== state.activeLayerId) return true;
   function walk(nodes, ancestorLocked) {
     for (const node of nodes) {
       const eff = ancestorLocked || !!node.locked;
@@ -482,9 +486,18 @@ function addLayer(name, color, parentId) {
     state.layers.unshift(layer);
   }
   state.activeLayerId = layer.id;
+  // Only the active layer is editable, so anything selected on the
+  // previously-active layer needs to drop out of the selection.
+  state.selection = state.selection.filter(id => {
+    const found = findShapeById(id);
+    return found && !isLayerEffectivelyLocked(found.layer.id);
+  });
+  updateSelectionPanel();
   saveHistory();
   renderLayers();
   updateMoveToLayer();
+  redrawMain();
+  redrawOverlay();
   return layer;
 }
 
@@ -1457,12 +1470,16 @@ function redrawMain() {
   mCtx.scale(state.zoom, state.zoom);
 
   state.measurementLabels = [];
-  // Draw the layer tree bottom-to-top (top of the Layers panel = on top)
+  // Draw the layer tree bottom-to-top (top of the Layers panel = on top).
+  // Non-active layers are dimmed to signal they're read-only right now.
   paintLayerTree(state.layers, layer => {
+    const dimmed = state.activeLayerId && layer.id !== state.activeLayerId;
+    if (dimmed) mCtx.globalAlpha = 0.4;
     for (const shape of layer.shapes) {
       drawShape(mCtx, shape, layer.color, state.zoom);
       drawMeasurements(mCtx, shape, state.zoom, state.measurementLabels);
     }
+    if (dimmed) mCtx.globalAlpha = 1;
   });
   mCtx.restore();
 }
@@ -2208,8 +2225,13 @@ moveToLayerSel.addEventListener('change', () => {
     found.layer.shapes = found.layer.shapes.filter(s => s.id !== id);
     target.shapes.push(found.shape);
   }
+  // A shape moved off the active layer is no longer editable — drop it
+  // from the selection so its (now inert) handles don't linger on screen.
+  state.selection = state.selection.filter(id => !isLayerEffectivelyLocked(findShapeById(id)?.layer?.id));
   saveHistory();
+  updateSelectionPanel();
   redrawMain();
+  redrawOverlay();
 });
 
 function updateMoveToLayer() {
@@ -2494,7 +2516,10 @@ function renderLayerRows(nodes, depth) {
     // Lock toggle — a locked layer's shapes can't be selected, moved,
     // resized, erased, or have their measurement labels edited, and no new
     // shapes can be drawn onto it while it's active. Lock cascades to
-    // sub-layers the same way visibility does.
+    // sub-layers the same way visibility does. This is on top of the
+    // implicit lock every non-active layer already has (see
+    // isLayerEffectivelyLocked) — manual lock lets you protect a layer
+    // even while it's the active one.
     const lockBtn = document.createElement('div');
     lockBtn.className = 'layer-lock' + (layer.locked ? ' locked' : '');
     lockBtn.innerHTML = layer.locked
@@ -2593,7 +2618,16 @@ function renderLayerRows(nodes, depth) {
 
     item.addEventListener('click', () => {
       state.activeLayerId = layer.id;
+      // Only the active layer is editable, so anything selected on a layer
+      // we just switched away from needs to drop out of the selection.
+      state.selection = state.selection.filter(id => {
+        const found = findShapeById(id);
+        return found && !isLayerEffectivelyLocked(found.layer.id);
+      });
+      updateSelectionPanel();
       renderLayers();
+      redrawMain();
+      redrawOverlay();
     });
 
     layersList.appendChild(item);

@@ -558,6 +558,13 @@ hr { border-color: var(--border); margin: 6px 0; }
   letter-spacing: 0.2px;
 }
 
+.layers-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.2px;
+  padding: 0 10px 6px;
+}
+
 /* ── Symbol Library ── */
 #symbols-panel {
   flex-shrink: 1;
