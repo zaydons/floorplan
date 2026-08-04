@@ -27,8 +27,11 @@
         <button class="tool-btn" data-tool="rect" title="Rectangle (R)">
           <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>
         </button>
-        <button class="tool-btn" data-tool="polygon" title="Polygon / Wall (P)">
+        <button class="tool-btn" data-tool="polygon" title="Polygon (P)">
           <svg viewBox="0 0 24 24"><polyline points="4,18 8,6 14,14 19,8" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="tool-btn" data-tool="wall" title="Wall (W) — click to add points, double-click or right-click to finish">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="8.5" width="20" height="7" rx="0.5" stroke-width="1.5"/><line x1="2" y1="12" x2="22" y2="12" stroke-width="1"/></svg>
         </button>
         <button class="tool-btn" data-tool="circle" title="Circle (C)">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>
@@ -175,6 +178,11 @@
             <div class="prop-row" id="stairsPropRow" style="display:none">
               <label>Direction</label>
               <button id="stairsDirBtn" class="dir-toggle-btn">⇅ UP</button>
+            </div>
+            <div class="prop-row" id="wallPropRow" style="display:none">
+              <label>Thickness</label>
+              <input type="number" id="wallThickness" min="0.5" max="100000" step="0.5" value="12" title="Wall thickness (world units)">
+              <span id="wallThicknessHint" class="sym-size-hint"></span>
             </div>
             <div id="selectionProps" style="display:none">
               <hr>

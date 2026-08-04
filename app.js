@@ -38,6 +38,11 @@ function formatSizeHint(worldSize) {
   return `≈ ${parseFloat(inches.toFixed(1))} in`;
 }
 
+// Default wall thickness: a 2x4 stud wall plus drywall on both faces (~6in)
+function defaultWallThickness() {
+  return Math.max(2, 6 * worldUnitsPerInch());
+}
+
 const LAYER_COLORS = [
   '#7c6aff','#ff6a6a','#6affb0','#ffca6a','#6ab8ff','#ff6adb','#a8ff6a','#ff976a'
 ];
@@ -74,6 +79,7 @@ const state = {
     fontSize: 14,
     symbolSize: 40,
     stairsDirection: 'up',
+    wallThickness: 12,
   },
 };
 
@@ -82,8 +88,10 @@ const drag = {
   active: false,
   startX: 0, startY: 0,
   lastX: 0,  lastY: 0,
-  polyPoints: [],      // for polygon tool
+  polyPoints: [],      // for polygon/wall tools
   shape: null,         // shape being drawn (preview)
+  resizeApply: null,   // (wx, wy) => void, mutates the shape being resized
+  rubberStart: null, rubberEnd: null, rubberAdditive: false, // rubber-band select
 };
 
 let textPending = null; // { x, y } while text input is open
@@ -105,6 +113,7 @@ const modalOverlay    = document.getElementById('modal-overlay');
 const modalInput      = document.getElementById('modal-input');
 const textPropRow     = document.getElementById('textPropRow');
 const stairsPropRow   = document.getElementById('stairsPropRow');
+const wallPropRow     = document.getElementById('wallPropRow');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function uid() {
@@ -160,7 +169,8 @@ function addShapeCandidates(pts, s) {
       );
       break;
     }
-    case 'polygon': {
+    case 'polygon':
+    case 'wall': {
       if (!s.points) break;
       s.points.forEach(p => pts.push({ x: p.x, y: p.y }));
       for (let i = 0; i < s.points.length - 1; i++) {
@@ -189,8 +199,8 @@ function getSnapCandidates(excludeIds) {
       addShapeCandidates(pts, s);
     }
   }
-  // Let an in-progress polygon snap back onto its own earlier points (closing the loop)
-  if (state.tool === 'polygon' && drag.polyPoints.length) {
+  // Let an in-progress polygon/wall snap back onto its own earlier points (closing the loop)
+  if ((state.tool === 'polygon' || state.tool === 'wall') && drag.polyPoints.length) {
     drag.polyPoints.forEach(p => pts.push({ x: p.x, y: p.y }));
   }
   return pts;
@@ -447,6 +457,37 @@ function drawShape(ctx, shape, layerColor, scale = 1) {
       ctx.stroke();
       break;
     }
+    case 'wall': {
+      if (!shape.points || shape.points.length < 2) break;
+      const pts = shape.closed ? [...shape.points, shape.points[0]] : shape.points;
+
+      // Rendered as a thick filled band (real-world thickness, so it scales
+      // with zoom like any other geometry) rather than a thin outline —
+      // that's what makes it read as a wall instead of just a line.
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.lineJoin    = 'round';
+      ctx.lineCap     = 'round';
+      ctx.strokeStyle = shape.stroke;
+      ctx.lineWidth   = shape.thickness || 12;
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+
+      // Thin centerline edges for a crisp double-line look at any zoom
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+      ctx.lineWidth   = Math.max(0.5, 1 / scale);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
     case 'stairs': {
       const bx = Math.min(shape.x1, shape.x2);
       const by = Math.min(shape.y1, shape.y2);
@@ -562,6 +603,15 @@ function shapeBounds(shape) {
       const minY = Math.min(...ys), maxY = Math.max(...ys);
       return { x: minX - 4, y: minY - 4, w: maxX - minX + 8, h: maxY - minY + 8 };
     }
+    case 'wall': {
+      if (!shape.points.length) return { x: 0, y: 0, w: 0, h: 0 };
+      const pad = Math.max(4, (shape.thickness || 12) / 2 + 2);
+      const xs = shape.points.map(p => p.x);
+      const ys = shape.points.map(p => p.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs);
+      const minY = Math.min(...ys), maxY = Math.max(...ys);
+      return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+    }
     case 'text':
       return { x: shape.x - 4, y: shape.y - 20, w: 120, h: 24 };
     case 'symbol': {
@@ -601,6 +651,7 @@ function getShapeHandles(shape) {
         { x: shape.x2, y: shape.y1, apply: (wx, wy) => { shape.x2 = wx; shape.y1 = wy; } },
       ];
     case 'polygon':
+    case 'wall':
       return (shape.points || []).map((p, i) => ({
         x: p.x, y: p.y,
         apply: (wx, wy) => { shape.points[i] = { x: wx, y: wy }; },
@@ -704,7 +755,8 @@ function drawMeasurements(ctx, shape, scale) {
       drawMeasLabel(ctx, label, cx, cy, scale);
       break;
     }
-    case 'polygon': {
+    case 'polygon':
+    case 'wall': {
       if (!shape.points || shape.points.length < 2) return;
       const pts = shape.closed
         ? [...shape.points, shape.points[0]]
@@ -845,7 +897,25 @@ function redrawOverlay() {
     oCtx.restore();
   }
 
-  if (!state.selection.length && !drag.shape && !drag.polyPoints.length) return;
+  // Rubber-band selection box
+  if (drag.tool === 'rubberband' && drag.rubberStart && drag.rubberEnd) {
+    const rx = Math.min(drag.rubberStart.x, drag.rubberEnd.x);
+    const ry = Math.min(drag.rubberStart.y, drag.rubberEnd.y);
+    const rw = Math.abs(drag.rubberEnd.x - drag.rubberStart.x);
+    const rh = Math.abs(drag.rubberEnd.y - drag.rubberStart.y);
+    oCtx.save();
+    oCtx.translate(state.pan.x, state.pan.y);
+    oCtx.scale(state.zoom, state.zoom);
+    oCtx.fillStyle = 'rgba(124,106,255,0.12)';
+    oCtx.fillRect(rx, ry, rw, rh);
+    oCtx.strokeStyle = '#7c6aff';
+    oCtx.lineWidth   = 1 / state.zoom;
+    oCtx.setLineDash([4 / state.zoom, 3 / state.zoom]);
+    oCtx.strokeRect(rx, ry, rw, rh);
+    oCtx.restore();
+  }
+
+  if (!state.selection.length && !drag.shape && !drag.polyPoints.length && drag.tool !== 'rubberband') return;
 
   oCtx.save();
   oCtx.translate(state.pan.x, state.pan.y);
@@ -921,6 +991,7 @@ const cursorMap = {
   select: 'default', pan: 'grab', line: 'crosshair',
   rect: 'crosshair', circle: 'crosshair', polygon: 'crosshair',
   text: 'text', eraser: 'cell', sym: 'crosshair', stairs: 'crosshair',
+  wall: 'crosshair',
 };
 
 function setCursor(c) {
@@ -936,6 +1007,8 @@ function setTool(tool) {
   setCursor();
   textPropRow.style.display   = tool === 'text' ? 'flex' : 'none';
   stairsPropRow.style.display = tool === 'stairs' ? 'flex' : 'none';
+  wallPropRow.style.display   = tool === 'wall' ? 'flex' : 'none';
+  if (tool === 'wall') syncWallThicknessUI();
   if (tool !== 'sym') redrawOverlay();
 }
 
@@ -988,12 +1061,14 @@ function commitPolygon(closed = false) {
   if (!drag.polyPoints.length) return;
   const layer = activeLayer();
   if (!layer) { drag.polyPoints = []; redrawOverlay(); return; }
+  const isWall = state.tool === 'wall';
   const shape = {
     id: uid(), ...currentShapeProps(),
-    type: 'polygon',
+    type: isWall ? 'wall' : 'polygon',
     points: [...drag.polyPoints],
     closed,
   };
+  if (isWall) shape.thickness = state.props.wallThickness;
   layer.shapes.push(shape);
   drag.polyPoints = [];
   saveHistory();
@@ -1112,21 +1187,36 @@ function onPointerDown(e) {
       if (hit) break;
     }
     if (hit) {
-      if (!e.shiftKey) state.selection = [hit.id];
-      else if (!state.selection.includes(hit.id)) state.selection.push(hit.id);
-      else state.selection = state.selection.filter(id => id !== hit.id);
-    } else {
-      state.selection = [];
-    }
-    updateSelectionPanel();
-    redrawOverlay();
+      if (e.shiftKey) {
+        if (!state.selection.includes(hit.id)) state.selection.push(hit.id);
+        else state.selection = state.selection.filter(id => id !== hit.id);
+      } else if (!state.selection.includes(hit.id)) {
+        // Clicking a shape already part of a multi-selection keeps the
+        // whole group intact so it can be drag-moved together; only
+        // clicking an unselected shape (or empty space) narrows it down.
+        state.selection = [hit.id];
+      }
+      updateSelectionPanel();
+      redrawOverlay();
 
-    // Prepare to move selection
-    if (state.selection.length) {
-      drag.active = true; drag.tool = 'move';
-      drag.lastX = pos.wx; drag.lastY = pos.wy;
-      setCursor('grabbing');
+      // Prepare to move selection
+      if (state.selection.length) {
+        drag.active = true; drag.tool = 'move';
+        drag.lastX = pos.wx; drag.lastY = pos.wy;
+        setCursor('grabbing');
+      }
+      return;
     }
+
+    // Clicked empty space: start a rubber-band selection box instead of
+    // just clearing the selection outright.
+    if (!e.shiftKey) { state.selection = []; updateSelectionPanel(); }
+    drag.active = true;
+    drag.tool = 'rubberband';
+    drag.rubberAdditive = e.shiftKey;
+    drag.rubberStart = { x: pos.wx, y: pos.wy };
+    drag.rubberEnd   = { x: pos.wx, y: pos.wy };
+    redrawOverlay();
     return;
   }
 
@@ -1159,7 +1249,7 @@ function onPointerDown(e) {
     return;
   }
 
-  if (state.tool === 'polygon') {
+  if (state.tool === 'polygon' || state.tool === 'wall') {
     drag.polyPoints.push({ x: pos.wx, y: pos.wy });
     redrawOverlay();
     return;
@@ -1189,6 +1279,12 @@ function onPointerMove(e) {
   if (drag.tool === 'resize' && drag.active) {
     if (drag.resizeApply) drag.resizeApply(pos.wx, pos.wy);
     redrawMain(); redrawOverlay();
+    return;
+  }
+
+  if (drag.tool === 'rubberband' && drag.active) {
+    drag.rubberEnd = { x: pos.wx, y: pos.wy };
+    redrawOverlay();
     return;
   }
 
@@ -1227,8 +1323,8 @@ function onPointerMove(e) {
     return;
   }
 
-  // Polygon cursor line
-  if (state.tool === 'polygon' && drag.polyPoints.length) {
+  // Polygon/wall cursor line
+  if ((state.tool === 'polygon' || state.tool === 'wall') && drag.polyPoints.length) {
     redrawOverlay();
     oCtx.save();
     oCtx.translate(state.pan.x, state.pan.y);
@@ -1261,6 +1357,33 @@ function onPointerUp(e) {
     return;
   }
 
+  if (drag.tool === 'rubberband') {
+    const rx1 = Math.min(drag.rubberStart.x, drag.rubberEnd.x);
+    const ry1 = Math.min(drag.rubberStart.y, drag.rubberEnd.y);
+    const rx2 = Math.max(drag.rubberStart.x, drag.rubberEnd.x);
+    const ry2 = Math.max(drag.rubberStart.y, drag.rubberEnd.y);
+    const caught = [];
+    for (const layer of state.layers) {
+      if (!layer.visible) continue;
+      for (const s of layer.shapes) {
+        const b = shapeBounds(s);
+        const intersects = b.x < rx2 && b.x + b.w > rx1 && b.y < ry2 && b.y + b.h > ry1;
+        if (intersects) caught.push(s.id);
+      }
+    }
+    if (drag.rubberAdditive) {
+      for (const id of caught) if (!state.selection.includes(id)) state.selection.push(id);
+    } else {
+      state.selection = caught;
+    }
+    drag.active = false; drag.tool = null;
+    drag.rubberStart = null; drag.rubberEnd = null;
+    setCursor();
+    updateSelectionPanel();
+    redrawOverlay();
+    return;
+  }
+
   if (drag.tool === 'eraser') { drag.active = false; drag.tool = null; return; }
 
   if (drag.active && drag.shape) {
@@ -1283,7 +1406,7 @@ function onPointerUp(e) {
 }
 
 function onDblClick(e) {
-  if (state.tool === 'polygon') {
+  if (state.tool === 'polygon' || state.tool === 'wall') {
     commitPolygon(false);
   }
 }
@@ -1375,7 +1498,7 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser', m:'sym', s:'stairs' };
+  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser', m:'sym', s:'stairs', w:'wall' };
   if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1799,6 +1922,31 @@ function initSymbolControls() {
   });
 }
 
+// ── Wall controls ─────────────────────────────────────────────────────────────
+function syncWallThicknessUI() {
+  document.getElementById('wallThickness').value = parseFloat(state.props.wallThickness.toFixed(2));
+  document.getElementById('wallThicknessHint').textContent = formatSizeHint(state.props.wallThickness);
+}
+
+function initWallControls() {
+  state.props.wallThickness = defaultWallThickness();
+  syncWallThicknessUI();
+
+  document.getElementById('wallThickness').addEventListener('input', e => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) {
+      state.props.wallThickness = v;
+      document.getElementById('wallThicknessHint').textContent = formatSizeHint(v);
+      let changed = false;
+      for (const sid of state.selection) {
+        const found = findShapeById(sid);
+        if (found && found.shape.type === 'wall') { found.shape.thickness = v; changed = true; }
+      }
+      if (changed) { saveHistory(); redrawMain(); }
+    }
+  });
+}
+
 // ── Scale UI ──────────────────────────────────────────────────────────────────
 function syncScaleUI() {
   document.getElementById('scaleValue').value         = state.scale.gridValue;
@@ -1827,7 +1975,7 @@ function initScaleControls() {
 
   document.getElementById('scaleValue').addEventListener('input', e => {
     const v = parseFloat(e.target.value);
-    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); updateSnapHint(); syncSymbolSizeUI(); redrawMain(); }
+    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); updateSnapHint(); syncSymbolSizeUI(); syncWallThicknessUI(); redrawMain(); }
   });
 
   document.getElementById('scaleUnit').addEventListener('change', e => {
@@ -1835,6 +1983,7 @@ function initScaleControls() {
     updateScaleHint();
     updateSnapHint();
     syncSymbolSizeUI();
+    syncWallThicknessUI();
     redrawMain();
   });
 
@@ -1873,6 +2022,7 @@ function init() {
   updateSelectionPanel();
   renderSymbolLibrary();
   initSymbolControls();
+  initWallControls();
   initScaleControls();
   setTool('select');
   redrawAll();
