@@ -25,6 +25,11 @@ const state = {
   currentSymbol: 'outlet',
   symbolRotation: 0,   // degrees: 0 / 90 / 180 / 270
   mouseWorld: null,    // { x, y } for symbol placement preview
+  scale: {
+    gridValue: 1,        // real-world units per grid cell
+    unit: 'ft',          // 'ft' | 'in' | 'm' | 'cm' | 'mm'
+    showMeasurements: true,
+  },
   props: {
     stroke: '#1a1a2e',
     strokeWidth: 2,
@@ -300,6 +305,104 @@ function hitTest(shape, wx, wy) {
   return wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
 }
 
+// ── Measurements ──────────────────────────────────────────────────────────────
+function formatMeasurement(worldUnits) {
+  if (worldUnits < 0.5) return '';
+  const real = (worldUnits / GRID_SIZE) * state.scale.gridValue;
+  const d = real >= 100 ? 0 : real >= 10 ? 1 : 2;
+  return `${parseFloat(real.toFixed(d))} ${state.scale.unit}`;
+}
+
+function drawMeasLabel(ctx, text, x, y, scale) {
+  if (!text) return;
+  const fs  = 11 / scale;
+  const pad = 3 / scale;
+  ctx.save();
+  ctx.font         = `${fs}px -apple-system, sans-serif`;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(text).width;
+  ctx.fillStyle = 'rgba(14,14,30,0.78)';
+  ctx.fillRect(x - tw / 2 - pad, y - fs / 2 - pad, tw + pad * 2, fs + pad * 2);
+  ctx.fillStyle = '#a8c4ff';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function drawMeasurements(ctx, shape, scale) {
+  if (!state.scale.showMeasurements) return;
+  const off = 14 / scale; // label offset from shape edge
+
+  switch (shape.type) {
+    case 'line': {
+      const dx  = shape.x2 - shape.x1;
+      const dy  = shape.y2 - shape.y1;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 1) return;
+      const mx  = (shape.x1 + shape.x2) / 2;
+      const my  = (shape.y1 + shape.y2) / 2;
+      const ang = Math.atan2(dy, dx);
+      // Offset perpendicular to line
+      const lx  = mx - Math.sin(ang) * off;
+      const ly  = my + Math.cos(ang) * off;
+      ctx.save();
+      ctx.translate(lx, ly);
+      ctx.rotate(ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang);
+      drawMeasLabel(ctx, formatMeasurement(len), 0, 0, scale);
+      ctx.restore();
+      break;
+    }
+    case 'rect': {
+      const x = Math.min(shape.x1, shape.x2);
+      const y = Math.min(shape.y1, shape.y2);
+      const w = Math.abs(shape.x2 - shape.x1);
+      const h = Math.abs(shape.y2 - shape.y1);
+      if (w < 1 || h < 1) return;
+      // Width label above top edge
+      drawMeasLabel(ctx, formatMeasurement(w), x + w / 2, y - off, scale);
+      // Height label right of right edge, rotated
+      ctx.save();
+      ctx.translate(x + w + off, y + h / 2);
+      ctx.rotate(Math.PI / 2);
+      drawMeasLabel(ctx, formatMeasurement(h), 0, 0, scale);
+      ctx.restore();
+      break;
+    }
+    case 'circle': {
+      const cx = (shape.x1 + shape.x2) / 2;
+      const cy = (shape.y1 + shape.y2) / 2;
+      const rx = Math.abs(shape.x2 - shape.x1) / 2;
+      const ry = Math.abs(shape.y2 - shape.y1) / 2;
+      if (rx < 1 && ry < 1) return;
+      const label = rx === ry
+        ? 'Ø ' + formatMeasurement(rx * 2)
+        : formatMeasurement(rx * 2) + ' × ' + formatMeasurement(ry * 2);
+      drawMeasLabel(ctx, label, cx, cy, scale);
+      break;
+    }
+    case 'polygon': {
+      if (!shape.points || shape.points.length < 2) return;
+      const pts = shape.closed
+        ? [...shape.points, shape.points[0]]
+        : shape.points;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p1  = pts[i], p2 = pts[i + 1];
+        const dx  = p2.x - p1.x, dy = p2.y - p1.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 1) continue;
+        const mx  = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+        const ang = Math.atan2(dy, dx);
+        ctx.save();
+        ctx.translate(mx - Math.sin(ang) * off, my + Math.cos(ang) * off);
+        ctx.rotate(ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang);
+        drawMeasLabel(ctx, formatMeasurement(len), 0, 0, scale);
+        ctx.restore();
+      }
+      break;
+    }
+  }
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 function redrawGrid() {
   const W = gridCanvas.width;
@@ -352,6 +455,7 @@ function redrawMain() {
     if (!layer.visible) continue;
     for (const shape of layer.shapes) {
       drawShape(mCtx, shape, layer.color, state.zoom);
+      drawMeasurements(mCtx, shape, state.zoom);
     }
   }
   mCtx.restore();
@@ -920,7 +1024,7 @@ document.getElementById('loadInput').addEventListener('change', loadFile);
 document.getElementById('exportBtn').addEventListener('click', exportPNG);
 
 function saveFile() {
-  const data = JSON.stringify({ layers: state.layers }, null, 2);
+  const data = JSON.stringify({ layers: state.layers, scale: state.scale }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -941,6 +1045,10 @@ function loadFile(e) {
         state.layers        = data.layers;
         state.activeLayerId = state.layers[0]?.id || null;
         state.selection     = [];
+        if (data.scale) {
+          Object.assign(state.scale, data.scale);
+          syncScaleUI();
+        }
         saveHistory();
         renderLayers();
         updateMoveToLayer();
@@ -982,7 +1090,10 @@ function exportPNG() {
   for (let i = state.layers.length - 1; i >= 0; i--) {
     const layer = state.layers[i];
     if (!layer.visible) continue;
-    for (const shape of layer.shapes) drawShape(ctx, shape, layer.color, state.zoom);
+    for (const shape of layer.shapes) {
+      drawShape(ctx, shape, layer.color, state.zoom);
+      drawMeasurements(ctx, shape, state.zoom);
+    }
   }
   ctx.restore();
 
@@ -1183,6 +1294,40 @@ function initSymbolControls() {
   });
 }
 
+// ── Scale UI ──────────────────────────────────────────────────────────────────
+function syncScaleUI() {
+  document.getElementById('scaleValue').value         = state.scale.gridValue;
+  document.getElementById('scaleUnit').value          = state.scale.unit;
+  document.getElementById('showMeasurements').checked = state.scale.showMeasurements;
+  updateScaleHint();
+}
+
+function updateScaleHint() {
+  const { gridValue, unit } = state.scale;
+  document.getElementById('scaleHint').textContent =
+    `1 grid cell = ${gridValue} ${unit}  ·  5 cells = ${gridValue * 5} ${unit}`;
+}
+
+function initScaleControls() {
+  syncScaleUI();
+
+  document.getElementById('scaleValue').addEventListener('input', e => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); redrawMain(); }
+  });
+
+  document.getElementById('scaleUnit').addEventListener('change', e => {
+    state.scale.unit = e.target.value;
+    updateScaleHint();
+    redrawMain();
+  });
+
+  document.getElementById('showMeasurements').addEventListener('change', e => {
+    state.scale.showMeasurements = e.target.checked;
+    redrawMain();
+  });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   resizeCanvases();
@@ -1202,6 +1347,7 @@ function init() {
   updateSelectionPanel();
   renderSymbolLibrary();
   initSymbolControls();
+  initScaleControls();
   setTool('select');
   redrawAll();
 }

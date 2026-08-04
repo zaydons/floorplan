@@ -432,6 +432,18 @@ hr { border-color: var(--border); margin: 6px 0; }
   font-family: inherit;
 }
 
+/* ── Scale panel ── */
+#scale-panel .prop-row input[type="number"] {
+  width: 60px;
+}
+
+.scale-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  letter-spacing: 0.2px;
+}
+
 /* ── Symbol Library ── */
 #symbols-panel {
   flex-shrink: 0;
