@@ -43,6 +43,91 @@ function defaultWallThickness() {
   return Math.max(2, 6 * worldUnitsPerInch());
 }
 
+// ── Symbol bounding boxes ────────────────────────────────────────────────────
+// Symbol draw() functions aren't confined to a neat [-r,r] square — several
+// (doors, sconces, ceiling fans, anything with an arc/arrow/label) draw well
+// outside it. Rather than trust a hand-guessed box per symbol, render each
+// symbol once to an offscreen canvas at a known radius and scan for the
+// actual bounding box of what got drawn, normalized to r=1 units. Cheap
+// (runs once per symbol key, cached) and correct for every symbol
+// automatically, including future ones.
+const symbolBBoxCache = {};
+
+function computeSymbolNormalizedBBox(sym) {
+  const R = 100;
+  let pad = 60;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const size = R * 2 + pad * 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.translate(size / 2, size / 2);
+    ctx.strokeStyle = '#fff';
+    ctx.fillStyle = '#fff';
+    ctx.lineWidth = 1; // thin: capture path geometry, not stroke-width inflation
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    try { sym.draw(ctx, R); } catch { /* ignore malformed draw */ }
+
+    const data = ctx.getImageData(0, 0, size, size).data;
+    let minX = size, minY = size, maxX = 0, maxY = 0, found = false;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if (data[(y * size + x) * 4 + 3] > 10) {
+          found = true;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (!found) return { x0: -1, y0: -1, x1: 1, y1: 1 };
+
+    // If drawn content touches the buffer edge, it may have been clipped —
+    // some symbols (e.g. a door's swing arc) draw well past r. Retry bigger
+    // rather than silently under-reporting the extent.
+    if ((minX <= 1 || minY <= 1 || maxX >= size - 2 || maxY >= size - 2) && attempt < 5) {
+      pad *= 2;
+      continue;
+    }
+
+    return {
+      x0: (minX - size / 2) / R, y0: (minY - size / 2) / R,
+      x1: (maxX - size / 2) / R, y1: (maxY - size / 2) / R,
+    };
+  }
+}
+
+function getSymbolNormalizedBBox(sym) {
+  if (!symbolBBoxCache[sym.key]) symbolBBoxCache[sym.key] = computeSymbolNormalizedBBox(sym);
+  return symbolBBoxCache[sym.key];
+}
+
+// World-space bounding box for a placed symbol shape, accounting for its
+// size and rotation (rotation is always a multiple of 90deg here, so the
+// bbox stays axis-aligned — just corner-swapped).
+function getSymbolWorldBounds(shape) {
+  const sym = SYMBOLS.find(s => s.key === shape.symbolKey);
+  if (!sym) return null;
+  const norm = getSymbolNormalizedBBox(sym);
+  const r = (shape.size || 40) / 2;
+  const corners = [
+    { x: norm.x0 * r, y: norm.y0 * r }, { x: norm.x1 * r, y: norm.y0 * r },
+    { x: norm.x1 * r, y: norm.y1 * r }, { x: norm.x0 * r, y: norm.y1 * r },
+  ];
+  const rad = (shape.rotation || 0) * Math.PI / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const c of corners) {
+    const rx = c.x * cos - c.y * sin, ry = c.x * sin + c.y * cos;
+    if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+    if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+  }
+  return { x: shape.x + minX, y: shape.y + minY, w: maxX - minX, h: maxY - minY };
+}
+
 const LAYER_COLORS = [
   '#7c6aff','#ff6a6a','#6affb0','#ffca6a','#6ab8ff','#ff6adb','#a8ff6a','#ff976a'
 ];
@@ -279,6 +364,23 @@ function findLayerById(nodes, id) {
   return null;
 }
 
+// Lock cascades like visibility: a locked layer's children are also
+// effectively locked, regardless of their own flag.
+function isLayerEffectivelyLocked(targetId) {
+  function walk(nodes, ancestorLocked) {
+    for (const node of nodes) {
+      const eff = ancestorLocked || !!node.locked;
+      if (node.id === targetId) return eff;
+      if (node.children && node.children.length) {
+        const r = walk(node.children, eff);
+        if (r !== null) return r;
+      }
+    }
+    return null;
+  }
+  return walk(state.layers, false) || false;
+}
+
 // Returns { array, index } for whichever sibling array currently contains id
 // (state.layers itself, or some layer's children array at any depth).
 function findSiblingSlot(nodes, id) {
@@ -352,6 +454,7 @@ function addLayer(name, color, parentId) {
     shapes: [],
     children: [],
     expanded: true,
+    locked: false,
   };
   const parent = parentId ? findLayerById(state.layers, parentId) : null;
   if (parent) {
@@ -725,8 +828,13 @@ function shapeBounds(shape) {
     case 'text':
       return { x: shape.x - 4, y: shape.y - 20, w: 120, h: 24 };
     case 'symbol': {
-      const r = (shape.size || 40) / 2 + 4;
-      return { x: shape.x - r, y: shape.y - r, w: r * 2, h: r * 2 };
+      const b = getSymbolWorldBounds(shape);
+      if (!b) {
+        const r = (shape.size || 40) / 2 + 4;
+        return { x: shape.x - r, y: shape.y - r, w: r * 2, h: r * 2 };
+      }
+      const pad = 4;
+      return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
     }
     default:
       return { x: 0, y: 0, w: 0, h: 0 };
@@ -767,14 +875,47 @@ function getShapeHandles(shape) {
         apply: (wx, wy) => { shape.points[i] = { x: wx, y: wy }; },
       }));
     case 'symbol': {
-      const half = (shape.size || 40) / 2;
-      return [{
-        x: shape.x + half, y: shape.y + half,
-        apply: (wx, wy) => {
-          const d = Math.max(Math.abs(wx - shape.x), Math.abs(wy - shape.y));
-          shape.size = Math.max(4, d * 2);
+      // Resize handle sits at the symbol's actual bottom-right bound (not an
+      // assumed half-size square — see getSymbolWorldBounds), and scaling
+      // is relative to the drag-start distance so grabbing it never causes
+      // a jump for asymmetric symbols (e.g. a door's arc extends further
+      // than its nominal half-size in one direction).
+      const b = getSymbolWorldBounds(shape);
+      const startSize = shape.size || 40;
+      const hx = b ? b.x + b.w : shape.x + startSize / 2;
+      const hy = b ? b.y + b.h : shape.y + startSize / 2;
+      const refDist = Math.hypot(hx - shape.x, hy - shape.y) || 1;
+
+      // Rotate handle floats above the symbol's actual top edge, in its own
+      // (already-rotated) local "up" direction, so it stays put visually
+      // relative to the symbol as you spin it — not every door sits on a
+      // horizontal wall, so rotation isn't limited to 90deg steps here.
+      const sym = SYMBOLS.find(s => s.key === shape.symbolKey);
+      const nb = sym ? getSymbolNormalizedBBox(sym) : { x0: -1, y0: -1, x1: 1, y1: 1 };
+      const r = startSize / 2;
+      const localUpDist = Math.max(0, -nb.y0) * r + 22;
+      const rad = (shape.rotation || 0) * Math.PI / 180;
+      const rhx = shape.x + Math.sin(rad) * localUpDist;
+      const rhy = shape.y - Math.cos(rad) * localUpDist;
+
+      return [
+        {
+          x: hx, y: hy,
+          apply: (wx, wy) => {
+            const newDist = Math.hypot(wx - shape.x, wy - shape.y);
+            shape.size = Math.max(4, startSize * (newDist / refDist));
+          },
         },
-      }];
+        {
+          x: rhx, y: rhy, isRotate: true,
+          apply: (wx, wy, shiftKey) => {
+            const dx = wx - shape.x, dy = wy - shape.y;
+            let deg = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (shiftKey) deg = Math.round(deg / 15) * 15;
+            shape.rotation = ((deg % 360) + 360) % 360;
+          },
+        },
+      ];
     }
     default:
       return [];
@@ -939,6 +1080,17 @@ function drawMeasurements(ctx, shape, scale, recordInto) {
       }
       break;
     }
+    case 'symbol': {
+      // Not every door/window/fixture is the same size — show and allow
+      // editing the symbol's real-world size, positioned below its actual
+      // drawn extent (not a guessed half-size square).
+      const b = getSymbolWorldBounds(shape);
+      if (!b) return;
+      const lx = shape.x, ly = b.y + b.h + off;
+      const box = drawMeasLabel(ctx, formatMeasurement(shape.size || 40), lx, ly, scale);
+      registerMeasLabel(recordInto, shape.id, 'symbolSize', lx, ly, 0, box);
+      break;
+    }
   }
 }
 
@@ -950,7 +1102,11 @@ function hitTestMeasurementLabel(wx, wy) {
     const cos = Math.cos(-l.angle), sin = Math.sin(-l.angle);
     const lx = dx * cos - dy * sin;
     const ly = dx * sin + dy * cos;
-    if (Math.abs(lx) <= l.halfW && Math.abs(ly) <= l.halfH) return l;
+    if (Math.abs(lx) <= l.halfW && Math.abs(ly) <= l.halfH) {
+      const found = findShapeById(l.shapeId);
+      if (found && isLayerEffectivelyLocked(found.layer.id)) continue;
+      return l;
+    }
   }
   return null;
 }
@@ -977,6 +1133,8 @@ function getShapeDimensionWorld(shape, dimension, segmentIndex) {
       const i2 = (segmentIndex + 1) % pts.length;
       return Math.hypot(pts[i2].x - pts[segmentIndex].x, pts[i2].y - pts[segmentIndex].y);
     }
+    case 'symbolSize':
+      return shape.size || 40;
     default:
       return 0;
   }
@@ -1036,6 +1194,9 @@ function applyMeasurementEdit(shape, dimension, segmentIndex, newWorld) {
       pts[i2] = { x: p1.x + dx * k, y: p1.y + dy * k };
       return true;
     }
+    case 'symbolSize':
+      shape.size = newWorld;
+      return true;
     default:
       return false;
   }
@@ -1295,8 +1456,20 @@ function redrawOverlay() {
     if (state.selection.length === 1) {
       // Real, draggable handles (endpoints/corners/vertices) for the
       // single selected shape — these are what hitTestHandles() checks.
+      // Rotate handles render as a circle-on-a-stalk (standard convention)
+      // instead of the plain square used for resize/move handles.
       for (const h of getShapeHandles(found.shape)) {
-        oCtx.fillRect(h.x - HANDLE_R/state.zoom, h.y - HANDLE_R/state.zoom, (HANDLE_R*2)/state.zoom, (HANDLE_R*2)/state.zoom);
+        if (h.isRotate) {
+          oCtx.beginPath();
+          oCtx.moveTo(found.shape.x, found.shape.y);
+          oCtx.lineTo(h.x, h.y);
+          oCtx.stroke();
+          oCtx.beginPath();
+          oCtx.arc(h.x, h.y, HANDLE_R / state.zoom, 0, Math.PI * 2);
+          oCtx.fill();
+        } else {
+          oCtx.fillRect(h.x - HANDLE_R/state.zoom, h.y - HANDLE_R/state.zoom, (HANDLE_R*2)/state.zoom, (HANDLE_R*2)/state.zoom);
+        }
       }
     } else {
       // Multi-select: decorative bbox corners only (resize is single-shape only)
@@ -1391,7 +1564,7 @@ function updateShape(shape, wx, wy, e) {
 function commitPolygon(closed = false) {
   if (!drag.polyPoints.length) return;
   const layer = activeLayer();
-  if (!layer) { drag.polyPoints = []; redrawOverlay(); return; }
+  if (!layer || isLayerEffectivelyLocked(layer.id)) { drag.polyPoints = []; redrawOverlay(); return; }
   const isWall = state.tool === 'wall';
   const shape = {
     id: uid(), ...currentShapeProps(),
@@ -1510,7 +1683,7 @@ function onPointerDown(e) {
     // resizes instead of re-selecting/moving.
     if (state.selection.length === 1) {
       const found = findShapeById(state.selection[0]);
-      if (found && found.layer.visible) {
+      if (found && found.layer.visible && !isLayerEffectivelyLocked(found.layer.id)) {
         const handle = hitTestHandles(found.shape, pos.wx, pos.wy);
         if (handle) {
           drag.active = true;
@@ -1522,9 +1695,10 @@ function onPointerDown(e) {
       }
     }
 
-    // Hit test visible layers, topmost layer/shape first
+    // Hit test visible, unlocked layers, topmost layer/shape first
     let hit = null;
     forEachLayerTopFirst(state.layers, layer => {
+      if (isLayerEffectivelyLocked(layer.id)) return false;
       for (let i = layer.shapes.length - 1; i >= 0; i--) {
         if (hitTest(layer.shapes[i], pos.wx, pos.wy)) { hit = layer.shapes[i]; return true; }
       }
@@ -1577,7 +1751,7 @@ function onPointerDown(e) {
 
   if (state.tool === 'sym') {
     const layer = activeLayer();
-    if (!layer || !state.currentSymbol) return;
+    if (!layer || !state.currentSymbol || isLayerEffectivelyLocked(layer.id)) return;
     layer.shapes.push({
       id: uid(),
       type: 'symbol',
@@ -1601,7 +1775,7 @@ function onPointerDown(e) {
 
   // Line, rect, circle, stairs
   const layer = activeLayer();
-  if (!layer) return;
+  if (!layer || isLayerEffectivelyLocked(layer.id)) return;
   drag.active  = true;
   drag.tool    = state.tool;
   drag.startX  = pos.wx; drag.startY = pos.wy;
@@ -1621,7 +1795,7 @@ function onPointerMove(e) {
   }
 
   if (drag.tool === 'resize' && drag.active) {
-    if (drag.resizeApply) drag.resizeApply(pos.wx, pos.wy);
+    if (drag.resizeApply) drag.resizeApply(pos.wx, pos.wy, e.shiftKey);
     redrawMain(); redrawOverlay();
     return;
   }
@@ -1708,6 +1882,7 @@ function onPointerUp(e) {
     const ry2 = Math.max(drag.rubberStart.y, drag.rubberEnd.y);
     const caught = [];
     forEachVisibleLayer(state.layers, layer => {
+      if (isLayerEffectivelyLocked(layer.id)) return;
       for (const s of layer.shapes) {
         const b = shapeBounds(s);
         const intersects = b.x < rx2 && b.x + b.w > rx1 && b.y < ry2 && b.y + b.h > ry1;
@@ -1770,6 +1945,7 @@ function onWheel(e) {
 function eraseAt(wx, wy) {
   let changed = false;
   forEachVisibleLayer(state.layers, layer => {
+    if (isLayerEffectivelyLocked(layer.id)) return;
     const before = layer.shapes.length;
     layer.shapes = layer.shapes.filter(s => !hitTest(s, wx, wy));
     if (layer.shapes.length !== before) changed = true;
@@ -1820,7 +1996,7 @@ function commitText() {
   textInput.blur();
   if (!val || !pending) return;
   const layer = activeLayer();
-  if (!layer) return;
+  if (!layer || isLayerEffectivelyLocked(layer.id)) return;
   layer.shapes.push({
     id: uid(), ...currentShapeProps(),
     type: 'text', text: val,
@@ -1848,6 +2024,20 @@ document.addEventListener('keydown', e => {
     document.getElementById('symRotLabel').textContent = state.symbolRotation + '°';
     redrawOverlay();
     return;
+  }
+
+  // R also rotates an already-placed, selected symbol by 90deg (for finer
+  // control, drag its rotate handle instead) — not every door/window sits
+  // on a horizontal wall.
+  if (e.key.toLowerCase() === 'r' && state.tool === 'select' && state.selection.length === 1) {
+    const found = findShapeById(state.selection[0]);
+    if (found && found.shape.type === 'symbol' && found.layer.visible && !isLayerEffectivelyLocked(found.layer.id)) {
+      found.shape.rotation = ((found.shape.rotation || 0) + 90) % 360;
+      saveHistory();
+      redrawMain();
+      redrawOverlay();
+      return;
+    }
   }
 
   const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser', m:'sym', s:'stairs', w:'wall' };
@@ -2105,7 +2295,7 @@ function renderLayerRows(nodes, depth) {
     const hasChildren = layer.children && layer.children.length > 0;
 
     const item = document.createElement('div');
-    item.className = 'layer-item' + (layer.id === state.activeLayerId ? ' active' : '') + (!layer.visible ? ' hidden' : '');
+    item.className = 'layer-item' + (layer.id === state.activeLayerId ? ' active' : '') + (!layer.visible ? ' hidden' : '') + (layer.locked ? ' locked' : '');
     item.dataset.id = layer.id;
     item.style.paddingLeft = (8 + depth * 15) + 'px';
 
@@ -2133,6 +2323,30 @@ function renderLayerRows(nodes, depth) {
       : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
     vis.title = layer.visible ? 'Hide (also hides sub-layers)' : 'Show';
     vis.addEventListener('click', e => { e.stopPropagation(); layer.visible = !layer.visible; renderLayers(); redrawMain(); });
+
+    // Lock toggle — a locked layer's shapes can't be selected, moved,
+    // resized, erased, or have their measurement labels edited, and no new
+    // shapes can be drawn onto it while it's active. Lock cascades to
+    // sub-layers the same way visibility does.
+    const lockBtn = document.createElement('div');
+    lockBtn.className = 'layer-lock' + (layer.locked ? ' locked' : '');
+    lockBtn.innerHTML = layer.locked
+      ? `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10.5" width="14" height="9.5" rx="1.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>`
+      : `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10.5" width="14" height="9.5" rx="1.5"/><path d="M8 10.5V7a4 4 0 0 1 7.5-1.8"/></svg>`;
+    lockBtn.title = layer.locked ? 'Locked — click to unlock' : 'Unlocked — click to lock (also locks sub-layers)';
+    lockBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      layer.locked = !layer.locked;
+      if (layer.locked) {
+        state.selection = state.selection.filter(id => {
+          const found = findShapeById(id);
+          return found && !isLayerEffectivelyLocked(found.layer.id);
+        });
+        updateSelectionPanel();
+        redrawOverlay();
+      }
+      renderLayers();
+    });
 
     // Color swatch
     const swatchWrapper = document.createElement('div');
@@ -2207,7 +2421,7 @@ function renderLayerRows(nodes, depth) {
     });
 
     actions.append(addSubBtn, upBtn, downBtn, delBtn);
-    item.append(expandBtn, vis, swatchWrapper, nameEl, actions);
+    item.append(expandBtn, vis, lockBtn, swatchWrapper, nameEl, actions);
 
     item.addEventListener('click', () => {
       state.activeLayerId = layer.id;

@@ -340,6 +340,10 @@ hr { border-color: var(--border); margin: 6px 0; }
   opacity: 0.4;
 }
 
+.layer-item.locked {
+  background: rgba(243, 139, 168, 0.06);
+}
+
 .layer-expand-btn {
   width: 14px;
   height: 18px;
@@ -370,6 +374,21 @@ hr { border-color: var(--border); margin: 6px 0; }
 }
 
 .layer-visibility:hover { color: var(--text); }
+
+.layer-lock {
+  width: 16px;
+  height: 18px;
+  cursor: pointer;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.55;
+}
+
+.layer-lock:hover { color: var(--text); opacity: 1; }
+.layer-lock.locked { color: var(--danger); opacity: 1; }
 
 .layer-swatch {
   width: 12px;
