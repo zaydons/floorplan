@@ -34,7 +34,7 @@ const state = {
     showMeasurements: true,
   },
   props: {
-    stroke: '#1a1a2e',
+    stroke: '#e8eaf2',
     strokeWidth: 2,
     fill: '#ffffff',
     fillEnabled: false,
