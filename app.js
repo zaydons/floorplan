@@ -54,6 +54,13 @@ function defaultWallThickness() {
   return Math.max(2, 6 * worldUnitsPerInch());
 }
 
+// Symbols default to uniform sizing (shape.size), but sizeX/sizeY can be set
+// independently — a couch's width isn't its depth. These read the effective
+// value either way, so most code never has to care which mode a shape is in.
+function symEffSizeX(shape) { return shape.sizeX ?? shape.size ?? 40; }
+function symEffSizeY(shape) { return shape.sizeY ?? shape.size ?? 40; }
+function symIsUniform(shape) { return Math.abs(symEffSizeX(shape) - symEffSizeY(shape)) < 1; }
+
 // ── Symbol bounding boxes ────────────────────────────────────────────────────
 // Symbol draw() functions aren't confined to a neat [-r,r] square — several
 // (doors, sconces, ceiling fans, anything with an arc/arrow/label) draw well
@@ -123,10 +130,10 @@ function getSymbolWorldBounds(shape) {
   const sym = SYMBOLS.find(s => s.key === shape.symbolKey);
   if (!sym) return null;
   const norm = getSymbolNormalizedBBox(sym);
-  const r = (shape.size || 40) / 2;
+  const hrx = symEffSizeX(shape) / 2, hry = symEffSizeY(shape) / 2;
   const corners = [
-    { x: norm.x0 * r, y: norm.y0 * r }, { x: norm.x1 * r, y: norm.y0 * r },
-    { x: norm.x1 * r, y: norm.y1 * r }, { x: norm.x0 * r, y: norm.y1 * r },
+    { x: norm.x0 * hrx, y: norm.y0 * hry }, { x: norm.x1 * hrx, y: norm.y0 * hry },
+    { x: norm.x1 * hrx, y: norm.y1 * hry }, { x: norm.x0 * hrx, y: norm.y1 * hry },
   ];
   const rad = (shape.rotation || 0) * Math.PI / 180;
   const cos = Math.cos(rad), sin = Math.sin(rad);
@@ -790,7 +797,12 @@ function drawShape(ctx, shape, layerColor, scale = 1) {
       ctx.setLineDash([]);
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
-      sym.draw(ctx, (shape.size || 40) / 2);
+      // Non-uniform sizing draws at the X radius, then stretches the Y axis
+      // by the width:height ratio — the symbol's own draw() functions never
+      // need to know about it, since it's a plain post-hoc canvas scale.
+      const rx = symEffSizeX(shape) / 2, ry = symEffSizeY(shape) / 2;
+      if (Math.abs(rx - ry) >= 0.5) ctx.scale(1, ry / rx);
+      sym.draw(ctx, rx);
       ctx.restore();
       break;
     }
@@ -841,7 +853,7 @@ function shapeBounds(shape) {
     case 'symbol': {
       const b = getSymbolWorldBounds(shape);
       if (!b) {
-        const r = (shape.size || 40) / 2 + 4;
+        const r = (symEffSizeX(shape) + symEffSizeY(shape)) / 4 + 4;
         return { x: shape.x - r, y: shape.y - r, w: r * 2, h: r * 2 };
       }
       const pad = 4;
@@ -886,39 +898,74 @@ function getShapeHandles(shape) {
         apply: (wx, wy) => { shape.points[i] = { x: wx, y: wy }; },
       }));
     case 'symbol': {
-      // Resize handle sits at the symbol's actual bottom-right bound (not an
-      // assumed half-size square — see getSymbolWorldBounds), and scaling
-      // is relative to the drag-start distance so grabbing it never causes
-      // a jump for asymmetric symbols (e.g. a door's arc extends further
-      // than its nominal half-size in one direction).
-      const b = getSymbolWorldBounds(shape);
-      const startSize = shape.size || 40;
-      const hx = b ? b.x + b.w : shape.x + startSize / 2;
-      const hy = b ? b.y + b.h : shape.y + startSize / 2;
-      const refDist = Math.hypot(hx - shape.x, hy - shape.y) || 1;
+      const sym = SYMBOLS.find(s => s.key === shape.symbolKey);
+      const nb = sym ? getSymbolNormalizedBBox(sym) : { x0: -1, y0: -1, x1: 1, y1: 1 };
+      const startX = symEffSizeX(shape), startY = symEffSizeY(shape);
+      const hrx = startX / 2, hry = startY / 2;
+      const rad = (shape.rotation || 0) * Math.PI / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const toWorld = (lx, ly) => ({ x: shape.x + lx * cos - ly * sin, y: shape.y + lx * sin + ly * cos });
+      const toLocal = (wx, wy) => {
+        const dx = wx - shape.x, dy = wy - shape.y;
+        return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
+      };
+      // Once a symbol goes non-uniform, pin both axes explicitly so the
+      // legacy `size` field (still driven by the Symbols panel's Size
+      // field) can't silently pull one axis out of sync with the other.
+      const pinBothAxes = () => {
+        if (shape.sizeX === undefined) shape.sizeX = startX;
+        if (shape.sizeY === undefined) shape.sizeY = startY;
+      };
+
+      // Corner: uniform resize, scaling whatever the current width/height
+      // are by the same factor — preserves a couch's custom aspect ratio
+      // instead of forcing it back to square. Relative to drag-start
+      // distance so grabbing it never jumps for asymmetric symbols.
+      const corner = toWorld(nb.x1 * hrx, nb.y1 * hry);
+      const cornerRefDist = Math.hypot(corner.x - shape.x, corner.y - shape.y) || 1;
+
+      // Edge handles: width (right-middle) and height (bottom-middle),
+      // each independent of the other — this is what lets a couch be
+      // wider than it is deep instead of only scaling as one square.
+      const widthPt  = toWorld(nb.x1 * hrx, (nb.y0 + nb.y1) / 2 * hry);
+      const heightPt = toWorld((nb.x0 + nb.x1) / 2 * hrx, nb.y1 * hry);
 
       // Rotate handle floats above the symbol's actual top edge, in its own
       // (already-rotated) local "up" direction, so it stays put visually
       // relative to the symbol as you spin it — not every door sits on a
       // horizontal wall, so rotation isn't limited to 90deg steps here.
-      const sym = SYMBOLS.find(s => s.key === shape.symbolKey);
-      const nb = sym ? getSymbolNormalizedBBox(sym) : { x0: -1, y0: -1, x1: 1, y1: 1 };
-      const r = startSize / 2;
-      const localUpDist = Math.max(0, -nb.y0) * r + 22;
-      const rad = (shape.rotation || 0) * Math.PI / 180;
-      const rhx = shape.x + Math.sin(rad) * localUpDist;
-      const rhy = shape.y - Math.cos(rad) * localUpDist;
+      const localUpDist = Math.max(0, -nb.y0) * hry + 22;
+      const rotatePt = toWorld(0, -localUpDist);
 
       return [
         {
-          x: hx, y: hy,
+          x: corner.x, y: corner.y,
           apply: (wx, wy) => {
             const newDist = Math.hypot(wx - shape.x, wy - shape.y);
-            shape.size = Math.max(4, startSize * (newDist / refDist));
+            const k = newDist / cornerRefDist;
+            shape.sizeX = Math.max(4, startX * k);
+            shape.sizeY = Math.max(4, startY * k);
+            shape.size  = shape.sizeX;
           },
         },
         {
-          x: rhx, y: rhy, isRotate: true,
+          x: widthPt.x, y: widthPt.y,
+          apply: (wx, wy) => {
+            pinBothAxes();
+            const l = toLocal(wx, wy);
+            shape.sizeX = Math.max(4, (Math.abs(l.x) / Math.abs(nb.x1 || 1)) * 2);
+          },
+        },
+        {
+          x: heightPt.x, y: heightPt.y,
+          apply: (wx, wy) => {
+            pinBothAxes();
+            const l = toLocal(wx, wy);
+            shape.sizeY = Math.max(4, (Math.abs(l.y) / Math.abs(nb.y1 || 1)) * 2);
+          },
+        },
+        {
+          x: rotatePt.x, y: rotatePt.y, isRotate: true,
           apply: (wx, wy, shiftKey) => {
             const dx = wx - shape.x, dy = wy - shape.y;
             let deg = Math.atan2(dx, -dy) * 180 / Math.PI;
@@ -1113,12 +1160,28 @@ function drawMeasurements(ctx, shape, scale, recordInto) {
     case 'symbol': {
       // Not every door/window/fixture is the same size — show and allow
       // editing the symbol's real-world size, positioned below its actual
-      // drawn extent (not a guessed half-size square).
+      // drawn extent (not a guessed half-size square). Once resized
+      // non-uniformly (a couch wider than it is deep), this splits into
+      // independent width/depth labels instead of one combined size,
+      // matching how a non-circular ellipse already behaves.
       const b = getSymbolWorldBounds(shape);
       if (!b) return;
-      const lx = shape.x, ly = b.y + b.h + off;
-      const box = drawMeasLabel(ctx, formatMeasurement(shape.size || 40), lx, ly, scale);
-      registerMeasLabel(recordInto, shape.id, 'symbolSize', lx, ly, 0, box);
+      if (symIsUniform(shape)) {
+        const lx = shape.x, ly = b.y + b.h + off;
+        const box = drawMeasLabel(ctx, formatMeasurement(symEffSizeX(shape)), lx, ly, scale);
+        registerMeasLabel(recordInto, shape.id, 'symbolSize', lx, ly, 0, box);
+      } else {
+        const wx = shape.x, wy = b.y + b.h + off;
+        const wBox = drawMeasLabel(ctx, formatMeasurement(symEffSizeX(shape)), wx, wy, scale);
+        registerMeasLabel(recordInto, shape.id, 'symbolWidth', wx, wy, 0, wBox);
+        const hx = b.x + b.w + off, hy = shape.y;
+        ctx.save();
+        ctx.translate(hx, hy);
+        ctx.rotate(Math.PI / 2);
+        const hBox = drawMeasLabel(ctx, formatMeasurement(symEffSizeY(shape)), 0, 0, scale);
+        ctx.restore();
+        registerMeasLabel(recordInto, shape.id, 'symbolHeight', hx, hy, Math.PI / 2, hBox);
+      }
       break;
     }
   }
@@ -1164,7 +1227,11 @@ function getShapeDimensionWorld(shape, dimension, segmentIndex) {
       return Math.hypot(pts[i2].x - pts[segmentIndex].x, pts[i2].y - pts[segmentIndex].y);
     }
     case 'symbolSize':
-      return shape.size || 40;
+      return symEffSizeX(shape);
+    case 'symbolWidth':
+      return symEffSizeX(shape);
+    case 'symbolHeight':
+      return symEffSizeY(shape);
     default:
       return 0;
   }
@@ -1226,7 +1293,19 @@ function applyMeasurementEdit(shape, dimension, segmentIndex, newWorld) {
     }
     case 'symbolSize':
       shape.size = newWorld;
+      delete shape.sizeX;
+      delete shape.sizeY;
       return true;
+    case 'symbolWidth': {
+      if (shape.sizeY === undefined) shape.sizeY = symEffSizeY(shape);
+      shape.sizeX = newWorld;
+      return true;
+    }
+    case 'symbolHeight': {
+      if (shape.sizeX === undefined) shape.sizeX = symEffSizeX(shape);
+      shape.sizeY = newWorld;
+      return true;
+    }
     default:
       return false;
   }
@@ -2556,7 +2635,15 @@ function initSymbolControls() {
       let changed = false;
       for (const sid of state.selection) {
         const found = findShapeById(sid);
-        if (found && found.shape.type === 'symbol') { found.shape.size = v; changed = true; }
+        if (found && found.shape.type === 'symbol') {
+          // Also resets a non-uniform symbol (e.g. a resized couch) back to
+          // uniform at this size — the Size field is the discoverable way
+          // to undo an independent width/height edit.
+          found.shape.size = v;
+          delete found.shape.sizeX;
+          delete found.shape.sizeY;
+          changed = true;
+        }
       }
       if (changed) { saveHistory(); redrawMain(); }
       if (state.tool === 'sym') redrawOverlay();
