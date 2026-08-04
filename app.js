@@ -26,15 +26,26 @@ function defaultSymbolWorldSize(sym) {
   return Math.max(2, sym.sizeIn * worldUnitsPerInch());
 }
 
+// Feet-and-inches display, e.g. 2.667 -> "2ft 8in" — the standard
+// construction convention, instead of an awkward decimal like "2.67 ft".
+// Inches round to the nearest whole inch; a whole-foot or under-a-foot
+// value drops the redundant half ("2ft" / "8in" rather than "2ft 0in").
+function formatFeetInches(totalFeet) {
+  const totalInches = Math.round(totalFeet * 12);
+  const feet = Math.floor(totalInches / 12);
+  const inches = totalInches % 12;
+  if (feet === 0 && inches === 0) return '0ft';
+  if (feet === 0) return `${inches}in`;
+  if (inches === 0) return `${feet}ft`;
+  return `${feet}ft ${inches}in`;
+}
+
 // Convert a placed/preview symbol's world-unit size back to a friendly
 // real-world label (in/ft) for the size hint next to the Size field.
 function formatSizeHint(worldSize) {
   const inches = worldSize / worldUnitsPerInch();
   if (!isFinite(inches) || inches <= 0) return '';
-  if (inches >= 12) {
-    const ft = inches / 12;
-    return `≈ ${parseFloat(ft.toFixed(1))} ft`;
-  }
+  if (inches >= 12) return `≈ ${formatFeetInches(inches / 12)}`;
   return `≈ ${parseFloat(inches.toFixed(1))} in`;
 }
 
@@ -946,15 +957,34 @@ function realToWorldUnits(real) {
 function formatMeasurement(worldUnits) {
   if (worldUnits < 0.5) return '';
   const real = measurementRealValue(worldUnits);
+  if (state.scale.unit === 'ft') return formatFeetInches(real);
   const d = real >= 100 ? 0 : real >= 10 ? 1 : 2;
   return `${parseFloat(real.toFixed(d))} ${state.scale.unit}`;
 }
 
-// Plain numeric string (no unit suffix) for pre-filling the edit input.
-function formatMeasurementNumber(worldUnits) {
+// Value for pre-filling the edit input — feet+inches string to match the
+// label when the scale unit is ft (parseFeetInches reads it back), a plain
+// number otherwise.
+function formatMeasurementForEdit(worldUnits) {
   const real = measurementRealValue(worldUnits);
+  if (state.scale.unit === 'ft') return formatFeetInches(real);
   const d = real >= 100 ? 0 : real >= 10 ? 1 : 2;
   return parseFloat(real.toFixed(d));
+}
+
+// Parses "2ft 8in", "2' 8"", "2ft8in", "2 8" (feet, inches), "8in"/"8"",
+// or a plain decimal (feet) — whatever someone naturally types for a
+// feet-and-inches value. Returns null if nothing usable was found.
+function parseFeetInches(str) {
+  str = String(str).trim();
+  let m = str.match(/^(-?\d+(?:\.\d+)?)\s*(?:ft|')\s*(?:(-?\d+(?:\.\d+)?)\s*(?:in|"))?$/i);
+  if (m) return parseFloat(m[1]) + (m[2] ? parseFloat(m[2]) / 12 : 0);
+  m = str.match(/^(-?\d+(?:\.\d+)?)\s*(?:in|")$/i);
+  if (m) return parseFloat(m[1]) / 12;
+  m = str.match(/^(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)$/);
+  if (m) return parseFloat(m[1]) + parseFloat(m[2]) / 12;
+  const n = parseFloat(str);
+  return isNaN(n) ? null : n;
 }
 
 function drawMeasLabel(ctx, text, x, y, scale) {
@@ -1214,8 +1244,10 @@ function openMeasurementEdit(label) {
   redrawOverlay();
 
   const currentWorld = getShapeDimensionWorld(found.shape, label.dimension, label.segmentIndex);
-  measureEditInput.value = formatMeasurementNumber(currentWorld);
-  measureEditUnit.textContent = state.scale.unit;
+  measureEditInput.value = formatMeasurementForEdit(currentWorld);
+  // The ft value already spells out its own units ("2ft 8in"); showing a
+  // unit suffix alongside it would be redundant.
+  measureEditUnit.textContent = state.scale.unit === 'ft' ? '' : state.scale.unit;
 
   const s = worldToScreen(label.x, label.y);
   measureEditWrap.style.display = 'flex';
@@ -1244,7 +1276,9 @@ function closeMeasurementEdit() {
 
 function commitMeasurementEdit() {
   if (!editingLabel) return;
-  const val = parseFloat(measureEditInput.value);
+  const val = state.scale.unit === 'ft'
+    ? parseFeetInches(measureEditInput.value)
+    : parseFloat(measureEditInput.value);
   const label = editingLabel;
   closeMeasurementEdit();
   if (!(val > 0)) return;
@@ -2571,17 +2605,22 @@ function syncScaleUI() {
   updateSnapHint();
 }
 
+// "5 ft" / "0.5 ft" -> "5ft" / "6in"; other units keep a plain "N unit".
+function formatRealValue(real, unit) {
+  if (unit === 'ft') return formatFeetInches(real);
+  return `${parseFloat(real.toFixed(4))} ${unit}`;
+}
+
 function updateScaleHint() {
   const { gridValue, unit } = state.scale;
   document.getElementById('scaleHint').textContent =
-    `1 grid cell = ${gridValue} ${unit}  ·  5 cells = ${gridValue * 5} ${unit}`;
+    `1 grid cell = ${formatRealValue(gridValue, unit)}  ·  5 cells = ${formatRealValue(gridValue * 5, unit)}`;
 }
 
 function updateSnapHint() {
   const increment = state.scale.gridValue / state.snapDivisions;
-  const rounded = parseFloat(increment.toFixed(4));
   document.getElementById('snapHint').textContent =
-    `Snap increment: ${rounded} ${state.scale.unit}`;
+    `Snap increment: ${formatRealValue(increment, state.scale.unit)}`;
 }
 
 function initScaleControls() {

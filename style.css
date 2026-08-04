@@ -486,7 +486,7 @@ hr { border-color: var(--border); margin: 6px 0; }
 }
 
 #measureEditInput {
-  width: 64px;
+  width: 92px;
   border: none;
   outline: none;
   background: transparent;
