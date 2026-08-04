@@ -5,6 +5,7 @@ const GRID_SIZE = 20;
 const MIN_ZOOM  = 0.1;
 const MAX_ZOOM  = 10;
 const HANDLE_R  = 5;
+const SNAP_SHAPE_PX = 10; // screen-pixel radius for snapping to shape points
 
 const LAYER_COLORS = [
   '#7c6aff','#ff6a6a','#6affb0','#ffca6a','#6ab8ff','#ff6adb','#a8ff6a','#ff976a'
@@ -19,6 +20,8 @@ const state = {
   pan: { x: 0, y: 0 },
   showGrid: true,
   snapToGrid: true,
+  snapToShapes: true,
+  snapIndicator: null, // { x, y } world point currently snapped-to, for overlay feedback
   history: [],         // snapshots for undo
   future: [],          // snapshots for redo
   selection: [],       // selected shape ids
@@ -93,12 +96,99 @@ function worldToScreen(wx, wy) {
   };
 }
 
-function getCanvasPos(e) {
+// ── Snap-to-shape ────────────────────────────────────────────────────────────
+function addShapeCandidates(pts, s) {
+  switch (s.type) {
+    case 'line':
+      pts.push({ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 },
+                { x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 });
+      break;
+    case 'rect': {
+      const x1 = Math.min(s.x1, s.x2), x2 = Math.max(s.x1, s.x2);
+      const y1 = Math.min(s.y1, s.y2), y2 = Math.max(s.y1, s.y2);
+      pts.push(
+        { x: x1, y: y1 }, { x: x2, y: y1 }, { x: x1, y: y2 }, { x: x2, y: y2 },
+        { x: (x1 + x2) / 2, y: y1 }, { x: (x1 + x2) / 2, y: y2 },
+        { x: x1, y: (y1 + y2) / 2 }, { x: x2, y: (y1 + y2) / 2 },
+        { x: (x1 + x2) / 2, y: (y1 + y2) / 2 },
+      );
+      break;
+    }
+    case 'circle': {
+      const cx = (s.x1 + s.x2) / 2, cy = (s.y1 + s.y2) / 2;
+      const rx = Math.abs(s.x2 - s.x1) / 2, ry = Math.abs(s.y2 - s.y1) / 2;
+      pts.push(
+        { x: cx, y: cy },
+        { x: cx - rx, y: cy }, { x: cx + rx, y: cy },
+        { x: cx, y: cy - ry }, { x: cx, y: cy + ry },
+      );
+      break;
+    }
+    case 'polygon': {
+      if (!s.points) break;
+      s.points.forEach(p => pts.push({ x: p.x, y: p.y }));
+      for (let i = 0; i < s.points.length - 1; i++) {
+        const p1 = s.points[i], p2 = s.points[i + 1];
+        pts.push({ x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 });
+      }
+      if (s.closed && s.points.length > 1) {
+        const p1 = s.points[s.points.length - 1], p2 = s.points[0];
+        pts.push({ x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 });
+      }
+      break;
+    }
+    case 'text':
+    case 'symbol':
+      pts.push({ x: s.x, y: s.y });
+      break;
+  }
+}
+
+function getSnapCandidates(excludeIds) {
+  const pts = [];
+  for (const layer of state.layers) {
+    if (!layer.visible) continue;
+    for (const s of layer.shapes) {
+      if (excludeIds && excludeIds.has(s.id)) continue;
+      addShapeCandidates(pts, s);
+    }
+  }
+  // Let an in-progress polygon snap back onto its own earlier points (closing the loop)
+  if (state.tool === 'polygon' && drag.polyPoints.length) {
+    drag.polyPoints.forEach(p => pts.push({ x: p.x, y: p.y }));
+  }
+  return pts;
+}
+
+function nearestSnapPoint(wx, wy, excludeIds) {
+  const thresholdWorld = SNAP_SHAPE_PX / state.zoom;
+  let best = null, bestDistSq = thresholdWorld * thresholdWorld;
+  for (const p of getSnapCandidates(excludeIds)) {
+    const dx = p.x - wx, dy = p.y - wy;
+    const distSq = dx * dx + dy * dy;
+    if (distSq < bestDistSq) { bestDistSq = distSq; best = p; }
+  }
+  return best;
+}
+
+function getCanvasPos(e, excludeIds) {
   const r = overlayCanvas.getBoundingClientRect();
   const sx = (e.clientX ?? e.touches[0].clientX) - r.left;
   const sy = (e.clientY ?? e.touches[0].clientY) - r.top;
   const w  = screenToWorld(sx, sy);
-  return { sx, sy, wx: snap(w.x), wy: snap(w.y), rawX: w.x, rawY: w.y };
+  let wx = w.x, wy = w.y;
+  let snappedToShape = false;
+
+  if (state.snapToShapes) {
+    const snapped = nearestSnapPoint(w.x, w.y, excludeIds);
+    if (snapped) { wx = snapped.x; wy = snapped.y; snappedToShape = true; }
+  }
+  if (!snappedToShape && state.snapToGrid) {
+    wx = snap(wx); wy = snap(wy);
+  }
+  state.snapIndicator = snappedToShape ? { x: wx, y: wy } : null;
+
+  return { sx, sy, wx, wy, rawX: w.x, rawY: w.y };
 }
 
 function resizeCanvases() {
@@ -487,6 +577,24 @@ function redrawOverlay() {
     }
   }
 
+  // Snap-to-shape indicator
+  if (state.snapIndicator) {
+    oCtx.save();
+    oCtx.translate(state.pan.x, state.pan.y);
+    oCtx.scale(state.zoom, state.zoom);
+    const { x, y } = state.snapIndicator;
+    const r = 6 / state.zoom;
+    oCtx.strokeStyle = '#6affb0';
+    oCtx.lineWidth   = 1.5 / state.zoom;
+    oCtx.setLineDash([]);
+    oCtx.beginPath(); oCtx.arc(x, y, r, 0, Math.PI * 2); oCtx.stroke();
+    oCtx.beginPath();
+    oCtx.moveTo(x - r * 1.6, y); oCtx.lineTo(x + r * 1.6, y);
+    oCtx.moveTo(x, y - r * 1.6); oCtx.lineTo(x, y + r * 1.6);
+    oCtx.stroke();
+    oCtx.restore();
+  }
+
   if (!state.selection.length && !drag.shape && !drag.polyPoints.length) return;
 
   oCtx.save();
@@ -643,7 +751,7 @@ overlayCanvas.addEventListener('wheel',     onWheel, { passive: false });
 
 function onPointerDown(e) {
   if (e.button === 1) { drag.active = true; drag.tool = 'pan_mid'; const p = getCanvasPos(e); drag.lastX = p.sx; drag.lastY = p.sy; setCursor('grabbing'); return; }
-  const pos = getCanvasPos(e);
+  const pos = getCanvasPos(e, new Set(state.selection));
   coordsIndicator.textContent = `${Math.round(pos.rawX)}, ${Math.round(pos.rawY)}`;
 
   if (state.tool === 'pan') {
@@ -727,7 +835,7 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
-  const pos = getCanvasPos(e);
+  const pos = getCanvasPos(e, new Set(state.selection));
   coordsIndicator.textContent = `${Math.round(pos.rawX)}, ${Math.round(pos.rawY)}`;
 
   if (drag.tool === 'pan' || drag.tool === 'pan_mid') {
@@ -1015,6 +1123,12 @@ document.getElementById('gridToggle').addEventListener('click', function () {
 document.getElementById('snapToggle').addEventListener('click', function () {
   state.snapToGrid = !state.snapToGrid;
   this.classList.toggle('active', state.snapToGrid);
+});
+
+document.getElementById('snapShapeToggle').addEventListener('click', function () {
+  state.snapToShapes = !state.snapToShapes;
+  this.classList.toggle('active', state.snapToShapes);
+  if (!state.snapToShapes) { state.snapIndicator = null; redrawOverlay(); }
 });
 
 // ── Save / Load / Export ──────────────────────────────────────────────────────
