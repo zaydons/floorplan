@@ -51,6 +51,7 @@ const state = {
   pan: { x: 0, y: 0 },
   showGrid: true,
   snapToGrid: true,
+  snapDivisions: 1,    // grid snap resolution: 1 = whole cell, 2 = half, 4 = quarter, 8 = eighth
   snapToShapes: true,
   snapIndicator: null, // { x, y } world point currently snapped-to, for overlay feedback
   history: [],         // snapshots for undo
@@ -112,7 +113,8 @@ function uid() {
 
 function snap(v) {
   if (!state.snapToGrid) return v;
-  return Math.round(v / GRID_SIZE) * GRID_SIZE;
+  const step = GRID_SIZE / state.snapDivisions;
+  return Math.round(v / step) * step;
 }
 
 function screenToWorld(sx, sy) {
@@ -670,6 +672,22 @@ function redrawGrid() {
     gCtx.moveTo(0, y); gCtx.lineTo(W, y);
   }
   gCtx.stroke();
+
+  // Sub-grid lines at the active snap resolution (half/quarter/eighth cell)
+  if (state.snapToGrid && state.snapDivisions > 1) {
+    const subStep = step / state.snapDivisions;
+    gCtx.strokeStyle = 'rgba(255,255,255,0.025)';
+    gCtx.beginPath();
+    let i = 0;
+    for (let x = offX; x < W; x += subStep, i++) {
+      if (i % state.snapDivisions !== 0) { gCtx.moveTo(x, 0); gCtx.lineTo(x, H); }
+    }
+    i = 0;
+    for (let y = offY; y < H; y += subStep, i++) {
+      if (i % state.snapDivisions !== 0) { gCtx.moveTo(0, y); gCtx.lineTo(W, y); }
+    }
+    gCtx.stroke();
+  }
 
   // Major grid every 5 cells
   const majorStep = step * 5;
@@ -1406,7 +1424,7 @@ document.getElementById('loadInput').addEventListener('change', loadFile);
 document.getElementById('exportBtn').addEventListener('click', exportPNG);
 
 function saveFile() {
-  const data = JSON.stringify({ layers: state.layers, scale: state.scale }, null, 2);
+  const data = JSON.stringify({ layers: state.layers, scale: state.scale, snapDivisions: state.snapDivisions }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
@@ -1429,8 +1447,11 @@ function loadFile(e) {
         state.selection     = [];
         if (data.scale) {
           Object.assign(state.scale, data.scale);
-          syncScaleUI();
         }
+        if (data.snapDivisions) {
+          state.snapDivisions = data.snapDivisions;
+        }
+        syncScaleUI();
         saveHistory();
         renderLayers();
         updateMoveToLayer();
@@ -1706,7 +1727,9 @@ function syncScaleUI() {
   document.getElementById('scaleValue').value         = state.scale.gridValue;
   document.getElementById('scaleUnit').value          = state.scale.unit;
   document.getElementById('showMeasurements').checked = state.scale.showMeasurements;
+  document.getElementById('snapDivisions').value       = state.snapDivisions;
   updateScaleHint();
+  updateSnapHint();
 }
 
 function updateScaleHint() {
@@ -1715,17 +1738,25 @@ function updateScaleHint() {
     `1 grid cell = ${gridValue} ${unit}  ·  5 cells = ${gridValue * 5} ${unit}`;
 }
 
+function updateSnapHint() {
+  const increment = state.scale.gridValue / state.snapDivisions;
+  const rounded = parseFloat(increment.toFixed(4));
+  document.getElementById('snapHint').textContent =
+    `Snap increment: ${rounded} ${state.scale.unit}`;
+}
+
 function initScaleControls() {
   syncScaleUI();
 
   document.getElementById('scaleValue').addEventListener('input', e => {
     const v = parseFloat(e.target.value);
-    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); syncSymbolSizeUI(); redrawMain(); }
+    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); updateSnapHint(); syncSymbolSizeUI(); redrawMain(); }
   });
 
   document.getElementById('scaleUnit').addEventListener('change', e => {
     state.scale.unit = e.target.value;
     updateScaleHint();
+    updateSnapHint();
     syncSymbolSizeUI();
     redrawMain();
   });
@@ -1733,6 +1764,12 @@ function initScaleControls() {
   document.getElementById('showMeasurements').addEventListener('change', e => {
     state.scale.showMeasurements = e.target.checked;
     redrawMain();
+  });
+
+  document.getElementById('snapDivisions').addEventListener('change', e => {
+    state.snapDivisions = parseInt(e.target.value, 10) || 1;
+    updateSnapHint();
+    redrawGrid();
   });
 }
 
