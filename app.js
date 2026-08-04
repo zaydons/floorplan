@@ -72,6 +72,7 @@ const state = {
     dash: 'solid',
     fontSize: 14,
     symbolSize: 40,
+    stairsDirection: 'up',
   },
 };
 
@@ -102,6 +103,7 @@ const textInput       = document.getElementById('textInput');
 const modalOverlay    = document.getElementById('modal-overlay');
 const modalInput      = document.getElementById('modal-input');
 const textPropRow     = document.getElementById('textPropRow');
+const stairsPropRow   = document.getElementById('stairsPropRow');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function uid() {
@@ -134,7 +136,8 @@ function addShapeCandidates(pts, s) {
       pts.push({ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 },
                 { x: (s.x1 + s.x2) / 2, y: (s.y1 + s.y2) / 2 });
       break;
-    case 'rect': {
+    case 'rect':
+    case 'stairs': {
       const x1 = Math.min(s.x1, s.x2), x2 = Math.max(s.x1, s.x2);
       const y1 = Math.min(s.y1, s.y2), y2 = Math.max(s.y1, s.y2);
       pts.push(
@@ -300,6 +303,15 @@ function redo() {
 }
 
 // ── Shape drawing ─────────────────────────────────────────────────────────────
+function drawArrowhead(ctx, x, y, angle, size) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x - size * Math.cos(angle - Math.PI / 7), y - size * Math.sin(angle - Math.PI / 7));
+  ctx.lineTo(x - size * Math.cos(angle + Math.PI / 7), y - size * Math.sin(angle + Math.PI / 7));
+  ctx.closePath();
+  ctx.fill();
+}
+
 function applyStyle(ctx, shape, layerColor, scale) {
   ctx.strokeStyle = shape.stroke;
   ctx.lineWidth   = shape.strokeWidth / scale;
@@ -356,6 +368,66 @@ function drawShape(ctx, shape, layerColor, scale = 1) {
       ctx.stroke();
       break;
     }
+    case 'stairs': {
+      const bx = Math.min(shape.x1, shape.x2);
+      const by = Math.min(shape.y1, shape.y2);
+      const bw = Math.abs(shape.x2 - shape.x1);
+      const bh = Math.abs(shape.y2 - shape.y1);
+      if (bw < 1 || bh < 1) break;
+
+      if (shape.fillEnabled) { ctx.fillStyle = shape.fill; ctx.fillRect(bx, by, bw, bh); }
+      ctx.strokeRect(bx, by, bw, bh);
+
+      // Treads run perpendicular to the longer dimension, spaced at a
+      // real-world tread depth (~10.5in) so the count scales with the
+      // drawing's scale setting, not a fixed line count.
+      const horizontal   = bw >= bh;
+      const runLength    = horizontal ? bw : bh;
+      const treadSpacing = Math.max(4, 10.5 * worldUnitsPerInch());
+      const numTreads    = Math.min(30, Math.max(3, Math.round(runLength / treadSpacing)));
+
+      ctx.beginPath();
+      for (let i = 1; i < numTreads; i++) {
+        const t = i / numTreads;
+        if (horizontal) {
+          const x = bx + bw * t;
+          ctx.moveTo(x, by); ctx.lineTo(x, by + bh);
+        } else {
+          const y = by + bh * t;
+          ctx.moveTo(bx, y); ctx.lineTo(bx + bw, y);
+        }
+      }
+      ctx.stroke();
+
+      // Directional arrow along the centerline, oriented by drag direction
+      let ax1, ay1, ax2, ay2;
+      if (horizontal) {
+        const cy = by + bh / 2;
+        const leftToRight = shape.x2 >= shape.x1;
+        ax1 = leftToRight ? bx + bw * 0.1 : bx + bw * 0.9;
+        ax2 = leftToRight ? bx + bw * 0.9 : bx + bw * 0.1;
+        ay1 = ay2 = cy;
+      } else {
+        const cx = bx + bw / 2;
+        const topToBottom = shape.y2 >= shape.y1;
+        ay1 = topToBottom ? by + bh * 0.1 : by + bh * 0.9;
+        ay2 = topToBottom ? by + bh * 0.9 : by + bh * 0.1;
+        ax1 = ax2 = cx;
+      }
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ax1, ay1);
+      ctx.lineTo(ax2, ay2);
+      ctx.stroke();
+      const angle = Math.atan2(ay2 - ay1, ax2 - ax1);
+      ctx.fillStyle = shape.stroke;
+      drawArrowhead(ctx, ax2, ay2, angle, Math.min(bw, bh) * 0.18 + 3 / scale);
+      ctx.restore();
+
+      drawMeasLabel(ctx, shape.direction === 'down' ? 'DN' : 'UP', ax1, ay1, scale);
+      break;
+    }
     case 'text': {
       ctx.fillStyle = shape.stroke;
       ctx.font = `${shape.fontSize || 14}px -apple-system, sans-serif`;
@@ -392,7 +464,8 @@ function shapeBounds(shape) {
         h: Math.abs(shape.y2 - shape.y1) + 8,
       };
     case 'rect':
-    case 'circle': {
+    case 'circle':
+    case 'stairs': {
       const x = Math.min(shape.x1, shape.x2);
       const y = Math.min(shape.y1, shape.y2);
       return {
@@ -473,7 +546,8 @@ function drawMeasurements(ctx, shape, scale) {
       ctx.restore();
       break;
     }
-    case 'rect': {
+    case 'rect':
+    case 'stairs': {
       const x = Math.min(shape.x1, shape.x2);
       const y = Math.min(shape.y1, shape.y2);
       const w = Math.abs(shape.x2 - shape.x1);
@@ -693,7 +767,7 @@ function redrawAll() {
 const cursorMap = {
   select: 'default', pan: 'grab', line: 'crosshair',
   rect: 'crosshair', circle: 'crosshair', polygon: 'crosshair',
-  text: 'text', eraser: 'cell', sym: 'crosshair',
+  text: 'text', eraser: 'cell', sym: 'crosshair', stairs: 'crosshair',
 };
 
 function setCursor(c) {
@@ -707,7 +781,8 @@ function setTool(tool) {
   state.tool = tool;
   document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   setCursor();
-  textPropRow.style.display = tool === 'text' ? 'flex' : 'none';
+  textPropRow.style.display   = tool === 'text' ? 'flex' : 'none';
+  stairsPropRow.style.display = tool === 'stairs' ? 'flex' : 'none';
   if (tool !== 'sym') redrawOverlay();
 }
 
@@ -729,6 +804,7 @@ function startShape(wx, wy) {
     case 'line':   return { ...base, type: 'line',   x1: wx, y1: wy, x2: wx, y2: wy };
     case 'rect':   return { ...base, type: 'rect',   x1: wx, y1: wy, x2: wx, y2: wy };
     case 'circle': return { ...base, type: 'circle', x1: wx, y1: wy, x2: wx, y2: wy };
+    case 'stairs': return { ...base, type: 'stairs', x1: wx, y1: wy, x2: wx, y2: wy, direction: state.props.stairsDirection };
     default:       return null;
   }
 }
@@ -920,7 +996,7 @@ function onPointerDown(e) {
     return;
   }
 
-  // Line, rect, circle
+  // Line, rect, circle, stairs
   const layer = activeLayer();
   if (!layer) return;
   drag.active  = true;
@@ -1118,7 +1194,7 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser', m:'sym' };
+  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser', m:'sym', s:'stairs' };
   if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1199,6 +1275,17 @@ document.getElementById('propFillEnabled').addEventListener('change', e => {
     if (found) found.shape.fillEnabled = state.props.fillEnabled;
   }
   if (state.selection.length) { saveHistory(); redrawMain(); }
+});
+
+document.getElementById('stairsDirBtn').addEventListener('click', function () {
+  state.props.stairsDirection = state.props.stairsDirection === 'up' ? 'down' : 'up';
+  this.textContent = state.props.stairsDirection === 'up' ? '⇅ UP' : '⇅ DN';
+  let changed = false;
+  for (const sid of state.selection) {
+    const found = findShapeById(sid);
+    if (found && found.shape.type === 'stairs') { found.shape.direction = state.props.stairsDirection; changed = true; }
+  }
+  if (changed) { saveHistory(); redrawMain(); }
 });
 
 // ── Toolbar buttons ───────────────────────────────────────────────────────────

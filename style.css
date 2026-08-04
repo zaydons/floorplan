@@ -499,6 +499,19 @@ hr { border-color: var(--border); margin: 6px 0; }
 
 #symRotateBtn:hover { background: var(--surface2); color: var(--text); }
 
+.dir-toggle-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+}
+
+.dir-toggle-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
 #symbols-content {
   overflow-y: auto;
   flex: 1;
