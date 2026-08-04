@@ -749,6 +749,70 @@ overlayCanvas.addEventListener('dblclick',  onDblClick);
 overlayCanvas.addEventListener('contextmenu', e => { e.preventDefault(); commitPolygon(true); });
 overlayCanvas.addEventListener('wheel',     onWheel, { passive: false });
 
+// ── Touch support (phones / tablets) ────────────────────────────────────────
+// Single-finger drag maps to the current tool. Two-finger drag pans+pinch-zooms.
+const touchState = { pinching: false, lastDist: 0, lastMid: null };
+
+function touchToPointerEvent(t, extra) {
+  return { clientX: t.clientX, clientY: t.clientY, button: 0, shiftKey: false, ...extra };
+}
+
+function touchDist(t1, t2) {
+  return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+}
+
+function touchMid(t1, t2) {
+  return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+}
+
+overlayCanvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 2) {
+    touchState.pinching = true;
+    drag.active = false; drag.tool = null; drag.shape = null; // cancel any single-finger draw
+    touchState.lastDist = touchDist(e.touches[0], e.touches[1]);
+    touchState.lastMid  = touchMid(e.touches[0], e.touches[1]);
+    return;
+  }
+  if (e.touches.length === 1) {
+    onPointerDown(touchToPointerEvent(e.touches[0]));
+  }
+}, { passive: false });
+
+overlayCanvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (touchState.pinching && e.touches.length === 2) {
+    const dist = touchDist(e.touches[0], e.touches[1]);
+    const mid  = touchMid(e.touches[0], e.touches[1]);
+    const r    = overlayCanvas.getBoundingClientRect();
+    const sx   = mid.x - r.left, sy = mid.y - r.top;
+
+    const factor  = dist / touchState.lastDist;
+    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, state.zoom * factor));
+    state.pan.x = sx - (sx - state.pan.x) * (newZoom / state.zoom) + (mid.x - touchState.lastMid.x);
+    state.pan.y = sy - (sy - state.pan.y) * (newZoom / state.zoom) + (mid.y - touchState.lastMid.y);
+    state.zoom  = newZoom;
+
+    touchState.lastDist = dist;
+    touchState.lastMid  = mid;
+    redrawAll();
+    return;
+  }
+  if (e.touches.length === 1 && !touchState.pinching) {
+    onPointerMove(touchToPointerEvent(e.touches[0]));
+  }
+}, { passive: false });
+
+overlayCanvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (touchState.pinching) {
+    if (e.touches.length < 2) touchState.pinching = false;
+    return;
+  }
+  const t = e.changedTouches[0];
+  if (t) onPointerUp(touchToPointerEvent(t));
+}, { passive: false });
+
 function onPointerDown(e) {
   if (e.button === 1) { drag.active = true; drag.tool = 'pan_mid'; const p = getCanvasPos(e); drag.lastX = p.sx; drag.lastY = p.sy; setCursor('grabbing'); return; }
   const pos = getCanvasPos(e, new Set(state.selection));
