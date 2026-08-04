@@ -631,6 +631,8 @@ hr { border-color: var(--border); margin: 6px 0; }
     height: 40vh;
     border-left: none;
     border-top: 1px solid var(--border);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   #canvas-container {
@@ -638,8 +640,27 @@ hr { border-color: var(--border); margin: 6px 0; }
     min-height: 0;
   }
 
+  /* Let the sidebar be one continuous scroll; panels size to their
+     content instead of each managing its own internal scroll area,
+     so a single touch-drag scrolls through all of them. */
   #symbols-panel {
     max-height: none;
+    flex-shrink: 0;
+  }
+
+  #symbols-content {
+    flex: none;
+    overflow-y: visible;
+  }
+
+  #layers-panel {
+    flex: none;
+    overflow: visible;
+  }
+
+  #layers-list {
+    flex: none;
+    overflow-y: visible;
   }
 }
 
