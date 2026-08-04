@@ -499,6 +499,56 @@ function hitTest(shape, wx, wy) {
   return wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
 }
 
+// ── Resize handles ────────────────────────────────────────────────────────────
+// Each handle's apply(wx, wy) mutates the shape in place to track the drag.
+// Corner/endpoint handles keep the shape's original x1/y1 vs x2/y2 identity
+// (rather than a normalized min/max box) so dragging past the opposite corner
+// flips orientation naturally instead of collapsing — this matters for
+// stairs, whose direction arrow depends on the sign of x2-x1 / y2-y1.
+function getShapeHandles(shape) {
+  switch (shape.type) {
+    case 'line':
+      return [
+        { x: shape.x1, y: shape.y1, apply: (wx, wy) => { shape.x1 = wx; shape.y1 = wy; } },
+        { x: shape.x2, y: shape.y2, apply: (wx, wy) => { shape.x2 = wx; shape.y2 = wy; } },
+      ];
+    case 'rect':
+    case 'circle':
+    case 'stairs':
+      return [
+        { x: shape.x1, y: shape.y1, apply: (wx, wy) => { shape.x1 = wx; shape.y1 = wy; } },
+        { x: shape.x2, y: shape.y2, apply: (wx, wy) => { shape.x2 = wx; shape.y2 = wy; } },
+        { x: shape.x1, y: shape.y2, apply: (wx, wy) => { shape.x1 = wx; shape.y2 = wy; } },
+        { x: shape.x2, y: shape.y1, apply: (wx, wy) => { shape.x2 = wx; shape.y1 = wy; } },
+      ];
+    case 'polygon':
+      return (shape.points || []).map((p, i) => ({
+        x: p.x, y: p.y,
+        apply: (wx, wy) => { shape.points[i] = { x: wx, y: wy }; },
+      }));
+    case 'symbol': {
+      const half = (shape.size || 40) / 2;
+      return [{
+        x: shape.x + half, y: shape.y + half,
+        apply: (wx, wy) => {
+          const d = Math.max(Math.abs(wx - shape.x), Math.abs(wy - shape.y));
+          shape.size = Math.max(4, d * 2);
+        },
+      }];
+    }
+    default:
+      return [];
+  }
+}
+
+function hitTestHandles(shape, wx, wy) {
+  const threshold = (HANDLE_R + 4) / state.zoom;
+  for (const h of getShapeHandles(shape)) {
+    if (Math.hypot(h.x - wx, h.y - wy) <= threshold) return h;
+  }
+  return null;
+}
+
 // ── Measurements ──────────────────────────────────────────────────────────────
 function formatMeasurement(worldUnits) {
   if (worldUnits < 0.5) return '';
@@ -744,12 +794,20 @@ function redrawOverlay() {
     oCtx.lineWidth   = 1.5 / state.zoom;
     oCtx.setLineDash([4 / state.zoom, 3 / state.zoom]);
     oCtx.strokeRect(b.x, b.y, b.w, b.h);
-    // Corner handles
     oCtx.fillStyle = '#7c6aff';
     oCtx.setLineDash([]);
-    [[b.x, b.y],[b.x+b.w, b.y],[b.x, b.y+b.h],[b.x+b.w, b.y+b.h]].forEach(([hx,hy]) => {
-      oCtx.fillRect(hx - HANDLE_R/state.zoom, hy - HANDLE_R/state.zoom, (HANDLE_R*2)/state.zoom, (HANDLE_R*2)/state.zoom);
-    });
+    if (state.selection.length === 1) {
+      // Real, draggable handles (endpoints/corners/vertices) for the
+      // single selected shape — these are what hitTestHandles() checks.
+      for (const h of getShapeHandles(found.shape)) {
+        oCtx.fillRect(h.x - HANDLE_R/state.zoom, h.y - HANDLE_R/state.zoom, (HANDLE_R*2)/state.zoom, (HANDLE_R*2)/state.zoom);
+      }
+    } else {
+      // Multi-select: decorative bbox corners only (resize is single-shape only)
+      [[b.x, b.y],[b.x+b.w, b.y],[b.x, b.y+b.h],[b.x+b.w, b.y+b.h]].forEach(([hx,hy]) => {
+        oCtx.fillRect(hx - HANDLE_R/state.zoom, hy - HANDLE_R/state.zoom, (HANDLE_R*2)/state.zoom, (HANDLE_R*2)/state.zoom);
+      });
+    }
     oCtx.restore();
   }
 
@@ -933,6 +991,22 @@ function onPointerDown(e) {
   }
 
   if (state.tool === 'select') {
+    // If exactly one shape is selected, a click on one of its handles
+    // resizes instead of re-selecting/moving.
+    if (state.selection.length === 1) {
+      const found = findShapeById(state.selection[0]);
+      if (found) {
+        const handle = hitTestHandles(found.shape, pos.wx, pos.wy);
+        if (handle) {
+          drag.active = true;
+          drag.tool = 'resize';
+          drag.resizeApply = handle.apply;
+          setCursor('grabbing');
+          return;
+        }
+      }
+    }
+
     // Hit test visible layers
     let hit = null;
     for (const layer of state.layers) {
@@ -1017,6 +1091,12 @@ function onPointerMove(e) {
     return;
   }
 
+  if (drag.tool === 'resize' && drag.active) {
+    if (drag.resizeApply) drag.resizeApply(pos.wx, pos.wy);
+    redrawMain(); redrawOverlay();
+    return;
+  }
+
   if (drag.tool === 'move' && drag.active) {
     const dx = pos.wx - drag.lastX;
     const dy = pos.wy - drag.lastY;
@@ -1076,6 +1156,12 @@ function onPointerUp(e) {
 
   if (drag.tool === 'move') {
     drag.active = false; drag.tool = null; setCursor();
+    saveHistory();
+    return;
+  }
+
+  if (drag.tool === 'resize') {
+    drag.active = false; drag.tool = null; drag.resizeApply = null; setCursor();
     saveHistory();
     return;
   }
@@ -1598,6 +1684,12 @@ function initSymbolControls() {
     if (v > 0) {
       state.props.symbolSize = v;
       document.getElementById('symSizeHint').textContent = formatSizeHint(v);
+      let changed = false;
+      for (const sid of state.selection) {
+        const found = findShapeById(sid);
+        if (found && found.shape.type === 'symbol') { found.shape.size = v; changed = true; }
+      }
+      if (changed) { saveHistory(); redrawMain(); }
       if (state.tool === 'sym') redrawOverlay();
     }
   });
