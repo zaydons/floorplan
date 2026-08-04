@@ -20,7 +20,7 @@ const SYMBOL_CATEGORIES = [
 const SYMBOLS = [
   // ── Outlets ──────────────────────────────────────────────────────────────────
   {
-    key: 'outlet', label: 'Duplex Outlet', category: 'outlets',
+    key: 'outlet', label: 'Duplex Outlet', category: 'outlets', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       const sw = r * 0.13, sh = r * 0.32, gap = r * 0.24;
@@ -31,7 +31,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'outlet_gfci', label: 'GFCI Outlet', category: 'outlets',
+    key: 'outlet_gfci', label: 'GFCI Outlet', category: 'outlets', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       const sw = r * 0.12, sh = r * 0.24, gap = r * 0.22;
@@ -45,7 +45,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'outlet_floor', label: 'Floor Outlet', category: 'outlets',
+    key: 'outlet_floor', label: 'Floor Outlet', category: 'outlets', sizeIn: 4,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       const ir = r * 0.55;
@@ -56,7 +56,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'outlet_240', label: '240V Outlet', category: 'outlets',
+    key: 'outlet_240', label: '240V Outlet', category: 'outlets', sizeIn: 5.5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       // L-shaped slot pattern
@@ -73,7 +73,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'outlet_wp', label: 'Weatherproof', category: 'outlets',
+    key: 'outlet_wp', label: 'Weatherproof', category: 'outlets', sizeIn: 5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       const sw = r * 0.13, sh = r * 0.28, gap = r * 0.22;
@@ -90,7 +90,7 @@ const SYMBOLS = [
 
   // ── Switches ─────────────────────────────────────────────────────────────────
   {
-    key: 'switch_s1', label: 'Switch (S)', category: 'switches',
+    key: 'switch_s1', label: 'Switch (S)', category: 'switches', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath(); ctx.arc(0, r * 0.52, r * 0.15, 0, Math.PI * 2); ctx.fill();
@@ -101,7 +101,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'switch_s2', label: 'Double Pole (S2)', category: 'switches',
+    key: 'switch_s2', label: 'Double Pole (S2)', category: 'switches', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath(); ctx.arc(0, r * 0.52, r * 0.15, 0, Math.PI * 2); ctx.fill();
@@ -112,7 +112,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'switch_s3', label: '3-Way Switch (S3)', category: 'switches',
+    key: 'switch_s3', label: '3-Way Switch (S3)', category: 'switches', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath(); ctx.arc(0, r * 0.52, r * 0.15, 0, Math.PI * 2); ctx.fill();
@@ -123,7 +123,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'switch_dim', label: 'Dimmer (SD)', category: 'switches',
+    key: 'switch_dim', label: 'Dimmer (SD)', category: 'switches', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath(); ctx.arc(0, r * 0.52, r * 0.15, 0, Math.PI * 2); ctx.fill();
@@ -142,7 +142,7 @@ const SYMBOLS = [
 
   // ── Lighting ─────────────────────────────────────────────────────────────────
   {
-    key: 'light_ceiling', label: 'Ceiling Light', category: 'lighting',
+    key: 'light_ceiling', label: 'Ceiling Light', category: 'lighting', sizeIn: 12,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.38, 0, Math.PI * 2); ctx.stroke();
       for (let i = 0; i < 8; i++) {
@@ -155,7 +155,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'light_recessed', label: 'Recessed Light', category: 'lighting',
+    key: 'light_recessed', label: 'Recessed Light', category: 'lighting', sizeIn: 6,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.arc(0, 0, r * 0.48, 0, Math.PI * 2); ctx.stroke();
@@ -164,7 +164,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'light_wall', label: 'Wall Sconce', category: 'lighting',
+    key: 'light_wall', label: 'Wall Sconce', category: 'lighting', sizeIn: 8,
     draw(ctx, r) {
       ctx.beginPath(); ctx.moveTo(-r, 0); ctx.lineTo(r, 0); ctx.stroke();
       ctx.beginPath(); ctx.arc(0, 0, r * 0.82, -Math.PI, 0); ctx.closePath(); ctx.stroke();
@@ -178,7 +178,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'light_fan', label: 'Ceiling Fan', category: 'lighting',
+    key: 'light_fan', label: 'Ceiling Fan', category: 'lighting', sizeIn: 48,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.arc(0, 0, r * 0.18, 0, Math.PI * 2); ctx.stroke();
@@ -195,7 +195,7 @@ const SYMBOLS = [
 
   // ── Panel & Service ───────────────────────────────────────────────────────────
   {
-    key: 'panel', label: 'Breaker Panel', category: 'panel',
+    key: 'panel', label: 'Breaker Panel', category: 'panel', sizeIn: 30,
     draw(ctx, r) {
       const w = r * 1.3, h = r * 1.7;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -210,7 +210,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'junction', label: 'Junction Box', category: 'panel',
+    key: 'junction', label: 'Junction Box', category: 'panel', sizeIn: 4,
     draw(ctx, r) {
       const s = r * 1.5;
       ctx.strokeRect(-s / 2, -s / 2, s, s);
@@ -223,7 +223,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'subpanel', label: 'Sub-panel', category: 'panel',
+    key: 'subpanel', label: 'Sub-panel', category: 'panel', sizeIn: 24,
     draw(ctx, r) {
       const w = r * 1.3, h = r * 1.7;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -240,7 +240,7 @@ const SYMBOLS = [
 
   // ── Detectors & Special ───────────────────────────────────────────────────────
   {
-    key: 'smoke', label: 'Smoke Detector', category: 'special',
+    key: 'smoke', label: 'Smoke Detector', category: 'special', sizeIn: 5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2); ctx.stroke();
@@ -253,7 +253,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'co', label: 'CO Detector', category: 'special',
+    key: 'co', label: 'CO Detector', category: 'special', sizeIn: 5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2); ctx.stroke();
@@ -264,7 +264,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'thermostat', label: 'Thermostat', category: 'special',
+    key: 'thermostat', label: 'Thermostat', category: 'special', sizeIn: 4,
     draw(ctx, r) {
       ctx.strokeRect(-r * 0.82, -r * 0.82, r * 1.64, r * 1.64);
       // Thermometer stem
@@ -281,7 +281,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'tv', label: 'TV Outlet', category: 'special',
+    key: 'tv', label: 'TV Outlet', category: 'special', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = ctx.strokeStyle;
@@ -291,7 +291,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'phone', label: 'Phone / Data', category: 'special',
+    key: 'phone', label: 'Phone / Data', category: 'special', sizeIn: 4.5,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.88, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = ctx.strokeStyle;
@@ -301,7 +301,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'doorbell', label: 'Doorbell / Chime', category: 'special',
+    key: 'doorbell', label: 'Doorbell / Chime', category: 'special', sizeIn: 5,
     draw(ctx, r) {
       ctx.strokeRect(-r * 0.7, -r * 0.82, r * 1.4, r * 1.64);
       ctx.fillStyle = ctx.strokeStyle;
@@ -316,7 +316,7 @@ const SYMBOLS = [
 
   // ── HVAC ─────────────────────────────────────────────────────────────────────
   {
-    key: 'floor_register', label: 'Floor Register', category: 'hvac',
+    key: 'floor_register', label: 'Floor Register', category: 'hvac', sizeIn: 12,
     draw(ctx, r) {
       const w = r * 1.6, h = r * 1.1;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -330,7 +330,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'supply_register', label: 'Supply Register', category: 'hvac',
+    key: 'supply_register', label: 'Supply Register', category: 'hvac', sizeIn: 12,
     draw(ctx, r) {
       const w = r * 1.6, h = r * 1.1;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -349,7 +349,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'return_register', label: 'Return Register', category: 'hvac',
+    key: 'return_register', label: 'Return Register', category: 'hvac', sizeIn: 14,
     draw(ctx, r) {
       const w = r * 1.6, h = r * 1.1;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -368,7 +368,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'radiator', label: 'Radiator / Baseboard', category: 'hvac',
+    key: 'radiator', label: 'Radiator / Baseboard', category: 'hvac', sizeIn: 48,
     draw(ctx, r) {
       const w = r * 1.7, h = r * 0.7;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -382,7 +382,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'exhaust_fan', label: 'Exhaust Fan', category: 'hvac',
+    key: 'exhaust_fan', label: 'Exhaust Fan', category: 'hvac', sizeIn: 8,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.82, 0, Math.PI * 2); ctx.stroke();
       for (let i = 0; i < 3; i++) {
@@ -401,7 +401,7 @@ const SYMBOLS = [
 
   // ── Plumbing ─────────────────────────────────────────────────────────────────
   {
-    key: 'sink', label: 'Sink', category: 'plumbing',
+    key: 'sink', label: 'Sink', category: 'plumbing', sizeIn: 22,
     draw(ctx, r) {
       const w = r * 1.6, h = r * 1.1;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -411,7 +411,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'toilet', label: 'Toilet', category: 'plumbing',
+    key: 'toilet', label: 'Toilet', category: 'plumbing', sizeIn: 26,
     draw(ctx, r) {
       const tw = r * 1.1, th = r * 0.5;
       ctx.strokeRect(-tw / 2, -r * 0.9, tw, th);
@@ -421,7 +421,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'bathtub', label: 'Bathtub', category: 'plumbing',
+    key: 'bathtub', label: 'Bathtub', category: 'plumbing', sizeIn: 60,
     draw(ctx, r) {
       const w = r * 1.8, h = r * 1.1, rad = h * 0.4;
       ctx.beginPath();
@@ -439,7 +439,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'shower', label: 'Shower', category: 'plumbing',
+    key: 'shower', label: 'Shower', category: 'plumbing', sizeIn: 36,
     draw(ctx, r) {
       const s = r * 1.5;
       ctx.strokeRect(-s / 2, -s / 2, s, s);
@@ -452,7 +452,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'water_heater', label: 'Water Heater', category: 'plumbing',
+    key: 'water_heater', label: 'Water Heater', category: 'plumbing', sizeIn: 20,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.82, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = ctx.strokeStyle;
@@ -462,7 +462,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'floor_drain', label: 'Floor Drain', category: 'plumbing',
+    key: 'floor_drain', label: 'Floor Drain', category: 'plumbing', sizeIn: 4,
     draw(ctx, r) {
       ctx.beginPath(); ctx.arc(0, 0, r * 0.6, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath();
@@ -472,7 +472,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'shutoff_valve', label: 'Shutoff Valve', category: 'plumbing',
+    key: 'shutoff_valve', label: 'Shutoff Valve', category: 'plumbing', sizeIn: 3,
     draw(ctx, r) {
       ctx.beginPath();
       ctx.moveTo(-r * 0.9, 0); ctx.lineTo(r * 0.9, 0);
@@ -489,7 +489,7 @@ const SYMBOLS = [
 
   // ── Furniture ────────────────────────────────────────────────────────────────
   {
-    key: 'bed', label: 'Bed', category: 'furniture',
+    key: 'bed', label: 'Bed', category: 'furniture', sizeIn: 80,
     draw(ctx, r) {
       const w = r * 1.5, h = r * 1.9;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -502,7 +502,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'sofa', label: 'Sofa', category: 'furniture',
+    key: 'sofa', label: 'Sofa', category: 'furniture', sizeIn: 84,
     draw(ctx, r) {
       const w = r * 1.9, h = r * 1.0;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -515,14 +515,14 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'table', label: 'Table', category: 'furniture',
+    key: 'table', label: 'Table', category: 'furniture', sizeIn: 60,
     draw(ctx, r) {
       const w = r * 1.7, h = r * 1.1;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
     },
   },
   {
-    key: 'chair', label: 'Chair', category: 'furniture',
+    key: 'chair', label: 'Chair', category: 'furniture', sizeIn: 24,
     draw(ctx, r) {
       const s = r * 1.1;
       ctx.strokeRect(-s / 2, -s / 2, s, s);
@@ -532,7 +532,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'range', label: 'Range / Stove', category: 'furniture',
+    key: 'range', label: 'Range / Stove', category: 'furniture', sizeIn: 30,
     draw(ctx, r) {
       const w = r * 1.6, h = r * 1.6;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -545,7 +545,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'fridge', label: 'Refrigerator', category: 'furniture',
+    key: 'fridge', label: 'Refrigerator', category: 'furniture', sizeIn: 34,
     draw(ctx, r) {
       const w = r * 1.4, h = r * 1.8;
       ctx.strokeRect(-w / 2, -h / 2, w, h);
@@ -557,7 +557,7 @@ const SYMBOLS = [
 
   // ── Doors & Windows ────────────────────────────────────────────────────────────
   {
-    key: 'door_single', label: 'Door (Single)', category: 'openings',
+    key: 'door_single', label: 'Door (Single)', category: 'openings', sizeIn: 32,
     draw(ctx, r) {
       const w = r * 1.7;
       ctx.beginPath(); ctx.moveTo(-w / 2, 0); ctx.lineTo(w / 2, 0); ctx.stroke();
@@ -566,7 +566,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'door_double', label: 'Door (Double)', category: 'openings',
+    key: 'door_double', label: 'Door (Double)', category: 'openings', sizeIn: 64,
     draw(ctx, r) {
       const w = r * 1.8, half = w / 2;
       ctx.beginPath(); ctx.moveTo(-half, 0); ctx.lineTo(half, 0); ctx.stroke();
@@ -577,7 +577,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'door_sliding', label: 'Door (Sliding)', category: 'openings',
+    key: 'door_sliding', label: 'Door (Sliding)', category: 'openings', sizeIn: 72,
     draw(ctx, r) {
       const w = r * 1.8;
       ctx.beginPath();
@@ -593,7 +593,7 @@ const SYMBOLS = [
     },
   },
   {
-    key: 'window', label: 'Window', category: 'openings',
+    key: 'window', label: 'Window', category: 'openings', sizeIn: 36,
     draw(ctx, r) {
       const w = r * 1.9, h = r * 0.55;
       ctx.strokeRect(-w / 2, -h / 2, w, h);

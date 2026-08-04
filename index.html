@@ -168,7 +168,8 @@
             <span>Symbols</span>
             <div class="sym-controls">
               <label class="sym-ctrl-label">Size</label>
-              <input type="number" id="symSize" min="10" max="200" step="5" value="40" title="Symbol size (world units)">
+              <input type="number" id="symSize" min="0.5" max="100000" step="1" value="40" title="Symbol size (world units)">
+              <span id="symSizeHint" class="sym-size-hint"></span>
               <button id="symRotateBtn" title="Rotate 90° (R key)">↻ <span id="symRotLabel">0°</span></button>
             </div>
           </div>

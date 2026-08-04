@@ -7,6 +7,37 @@ const MAX_ZOOM  = 10;
 const HANDLE_R  = 5;
 const SNAP_SHAPE_PX = 10; // screen-pixel radius for snapping to shape points
 
+const UNIT_TO_METERS = { ft: 0.3048, in: 0.0254, m: 1, cm: 0.01, mm: 0.001 };
+const INCH_TO_METERS = 0.0254;
+
+// How many world (canvas) units correspond to one real-world inch,
+// given the current "1 grid = X unit" scale setting.
+function worldUnitsPerInch() {
+  const metersPerGridCell = state.scale.gridValue * (UNIT_TO_METERS[state.scale.unit] || 1);
+  if (!(metersPerGridCell > 0)) return GRID_SIZE / 12; // fallback: ~1ft/cell
+  const worldUnitsPerMeter = GRID_SIZE / metersPerGridCell;
+  return worldUnitsPerMeter * INCH_TO_METERS;
+}
+
+// A symbol's real-world default size (sizeIn, in inches) converted to
+// world units at the current scale, so a duplex outlet and a bed don't
+// render the same size just because they share a default.
+function defaultSymbolWorldSize(sym) {
+  return Math.max(2, sym.sizeIn * worldUnitsPerInch());
+}
+
+// Convert a placed/preview symbol's world-unit size back to a friendly
+// real-world label (in/ft) for the size hint next to the Size field.
+function formatSizeHint(worldSize) {
+  const inches = worldSize / worldUnitsPerInch();
+  if (!isFinite(inches) || inches <= 0) return '';
+  if (inches >= 12) {
+    const ft = inches / 12;
+    return `≈ ${parseFloat(ft.toFixed(1))} ft`;
+  }
+  return `≈ ${parseFloat(inches.toFixed(1))} in`;
+}
+
 const LAYER_COLORS = [
   '#7c6aff','#ff6a6a','#6affb0','#ffca6a','#6ab8ff','#ff6adb','#a8ff6a','#ff976a'
 ];
@@ -1448,6 +1479,8 @@ function renderSymbolLibrary() {
       btn.addEventListener('click', () => {
         state.currentSymbol = sym.key;
         document.querySelectorAll('.sym-btn').forEach(b => b.classList.toggle('active', b.dataset.key === sym.key));
+        state.props.symbolSize = defaultSymbolWorldSize(sym);
+        syncSymbolSizeUI();
         setTool('sym');
       });
 
@@ -1458,11 +1491,28 @@ function renderSymbolLibrary() {
   });
 }
 
-function initSymbolControls() {
+function syncSymbolSizeUI() {
   const sizeInput = document.getElementById('symSize');
-  sizeInput.value = state.props.symbolSize;
-  sizeInput.addEventListener('input', () => {
-    state.props.symbolSize = Math.max(10, parseInt(sizeInput.value) || 40);
+  const hint       = document.getElementById('symSizeHint');
+  sizeInput.value  = parseFloat(state.props.symbolSize.toFixed(2));
+  hint.textContent = formatSizeHint(state.props.symbolSize);
+  if (state.tool === 'sym') redrawOverlay();
+}
+
+function initSymbolControls() {
+  // Start from the currently-selected symbol's real-world default rather
+  // than an arbitrary constant, so it's scaled correctly from first paint.
+  const startSym = SYMBOLS.find(s => s.key === state.currentSymbol);
+  if (startSym) state.props.symbolSize = defaultSymbolWorldSize(startSym);
+  syncSymbolSizeUI();
+
+  document.getElementById('symSize').addEventListener('input', e => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) {
+      state.props.symbolSize = v;
+      document.getElementById('symSizeHint').textContent = formatSizeHint(v);
+      if (state.tool === 'sym') redrawOverlay();
+    }
   });
 
   document.getElementById('symRotateBtn').addEventListener('click', () => {
@@ -1491,12 +1541,13 @@ function initScaleControls() {
 
   document.getElementById('scaleValue').addEventListener('input', e => {
     const v = parseFloat(e.target.value);
-    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); redrawMain(); }
+    if (v > 0) { state.scale.gridValue = v; updateScaleHint(); syncSymbolSizeUI(); redrawMain(); }
   });
 
   document.getElementById('scaleUnit').addEventListener('change', e => {
     state.scale.unit = e.target.value;
     updateScaleHint();
+    syncSymbolSizeUI();
     redrawMain();
   });
 
