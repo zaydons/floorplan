@@ -985,11 +985,18 @@ function getShapeHandles(shape) {
 }
 
 function hitTestHandles(shape, wx, wy) {
-  const threshold = (HANDLE_R + 4) / state.zoom;
+  // A generous threshold matters more now that symbols can show 4 handles
+  // (corner/width/height/rotate) clustered close together — small and
+  // imprecise on a touchscreen especially. Picking the closest handle
+  // within range (not just the first one encountered) avoids grabbing the
+  // wrong one when two thresholds overlap.
+  const threshold = (HANDLE_R + 9) / state.zoom;
+  let closest = null, closestDist = threshold;
   for (const h of getShapeHandles(shape)) {
-    if (Math.hypot(h.x - wx, h.y - wy) <= threshold) return h;
+    const d = Math.hypot(h.x - wx, h.y - wy);
+    if (d <= closestDist) { closestDist = d; closest = h; }
   }
-  return null;
+  return closest;
 }
 
 // ── Measurements ──────────────────────────────────────────────────────────────
