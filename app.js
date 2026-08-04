@@ -59,6 +59,7 @@ const state = {
   snapDivisions: 1,    // grid snap resolution: 1 = whole cell, 2 = half, 4 = quarter, 8 = eighth
   snapToShapes: true,
   snapIndicator: null, // { x, y } world point currently snapped-to, for overlay feedback
+  measurementLabels: [], // clickable regions for the last redrawMain pass, see hitTestMeasurementLabel
   history: [],         // snapshots for undo
   future: [],          // snapshots for redo
   selection: [],       // selected shape ids
@@ -109,6 +110,9 @@ const coordsIndicator = document.getElementById('coords-indicator');
 const selectionProps  = document.getElementById('selectionProps');
 const moveToLayerSel  = document.getElementById('moveToLayer');
 const textInput       = document.getElementById('textInput');
+const measureEditWrap  = document.getElementById('measureEditWrap');
+const measureEditInput = document.getElementById('measureEditInput');
+const measureEditUnit  = document.getElementById('measureEditUnit');
 const modalOverlay    = document.getElementById('modal-overlay');
 const modalInput      = document.getElementById('modal-input');
 const textPropRow     = document.getElementById('textPropRow');
@@ -786,15 +790,34 @@ function hitTestHandles(shape, wx, wy) {
 }
 
 // ── Measurements ──────────────────────────────────────────────────────────────
+// worldUnits -> real-world number, in the current scale unit (no suffix)
+function measurementRealValue(worldUnits) {
+  return (worldUnits / GRID_SIZE) * state.scale.gridValue;
+}
+
+// Inverse of measurementRealValue: a number typed in the current scale unit
+// -> world units, for applying an edited measurement back to a shape.
+function realToWorldUnits(real) {
+  if (!(state.scale.gridValue > 0)) return real;
+  return (real / state.scale.gridValue) * GRID_SIZE;
+}
+
 function formatMeasurement(worldUnits) {
   if (worldUnits < 0.5) return '';
-  const real = (worldUnits / GRID_SIZE) * state.scale.gridValue;
+  const real = measurementRealValue(worldUnits);
   const d = real >= 100 ? 0 : real >= 10 ? 1 : 2;
   return `${parseFloat(real.toFixed(d))} ${state.scale.unit}`;
 }
 
+// Plain numeric string (no unit suffix) for pre-filling the edit input.
+function formatMeasurementNumber(worldUnits) {
+  const real = measurementRealValue(worldUnits);
+  const d = real >= 100 ? 0 : real >= 10 ? 1 : 2;
+  return parseFloat(real.toFixed(d));
+}
+
 function drawMeasLabel(ctx, text, x, y, scale) {
-  if (!text) return;
+  if (!text) return null;
   const fs  = 11 / scale;
   const pad = 3 / scale;
   ctx.save();
@@ -807,9 +830,19 @@ function drawMeasLabel(ctx, text, x, y, scale) {
   ctx.fillStyle = '#a8c4ff';
   ctx.fillText(text, x, y);
   ctx.restore();
+  return { halfW: tw / 2 + pad, halfH: fs / 2 + pad };
 }
 
-function drawMeasurements(ctx, shape, scale) {
+// Registers a label's clickable region in world space (called only for the
+// live/interactive canvas, not the PNG export render). angle is whatever
+// rotation was applied via ctx.rotate() right before drawing the label at
+// local (0,0), so the hit-test can transform a click into the label's frame.
+function registerMeasLabel(recordInto, shapeId, dimension, x, y, angle, box, segmentIndex) {
+  if (!recordInto || !box) return;
+  recordInto.push({ shapeId, dimension, segmentIndex, x, y, angle, halfW: box.halfW, halfH: box.halfH });
+}
+
+function drawMeasurements(ctx, shape, scale, recordInto) {
   if (!state.scale.showMeasurements) return;
   const off = 14 / scale; // label offset from shape edge
 
@@ -825,11 +858,13 @@ function drawMeasurements(ctx, shape, scale) {
       // Offset perpendicular to line
       const lx  = mx - Math.sin(ang) * off;
       const ly  = my + Math.cos(ang) * off;
+      const drawAng = ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang;
       ctx.save();
       ctx.translate(lx, ly);
-      ctx.rotate(ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang);
-      drawMeasLabel(ctx, formatMeasurement(len), 0, 0, scale);
+      ctx.rotate(drawAng);
+      const box = drawMeasLabel(ctx, formatMeasurement(len), 0, 0, scale);
       ctx.restore();
+      registerMeasLabel(recordInto, shape.id, 'length', lx, ly, drawAng, box);
       break;
     }
     case 'rect':
@@ -840,13 +875,17 @@ function drawMeasurements(ctx, shape, scale) {
       const h = Math.abs(shape.y2 - shape.y1);
       if (w < 1 || h < 1) return;
       // Width label above top edge
-      drawMeasLabel(ctx, formatMeasurement(w), x + w / 2, y - off, scale);
+      const wx = x + w / 2, wy = y - off;
+      const wBox = drawMeasLabel(ctx, formatMeasurement(w), wx, wy, scale);
+      registerMeasLabel(recordInto, shape.id, 'width', wx, wy, 0, wBox);
       // Height label right of right edge, rotated
+      const hx = x + w + off, hy = y + h / 2;
       ctx.save();
-      ctx.translate(x + w + off, y + h / 2);
+      ctx.translate(hx, hy);
       ctx.rotate(Math.PI / 2);
-      drawMeasLabel(ctx, formatMeasurement(h), 0, 0, scale);
+      const hBox = drawMeasLabel(ctx, formatMeasurement(h), 0, 0, scale);
       ctx.restore();
+      registerMeasLabel(recordInto, shape.id, 'height', hx, hy, Math.PI / 2, hBox);
       break;
     }
     case 'circle': {
@@ -855,10 +894,25 @@ function drawMeasurements(ctx, shape, scale) {
       const rx = Math.abs(shape.x2 - shape.x1) / 2;
       const ry = Math.abs(shape.y2 - shape.y1) / 2;
       if (rx < 1 && ry < 1) return;
-      const label = rx === ry
-        ? 'Ø ' + formatMeasurement(rx * 2)
-        : formatMeasurement(rx * 2) + ' × ' + formatMeasurement(ry * 2);
-      drawMeasLabel(ctx, label, cx, cy, scale);
+      if (rx === ry) {
+        const box = drawMeasLabel(ctx, 'Ø ' + formatMeasurement(rx * 2), cx, cy, scale);
+        registerMeasLabel(recordInto, shape.id, 'diameter', cx, cy, 0, box);
+      } else {
+        // Two independently-editable labels, laid out like rect's, but
+        // tagged as ellipseWidth/Height (not width/height) since editing
+        // them must keep the center fixed, unlike rect's anchor-preserving
+        // behavior.
+        const wy = cy - ry - off;
+        const wBox = drawMeasLabel(ctx, formatMeasurement(rx * 2), cx, wy, scale);
+        registerMeasLabel(recordInto, shape.id, 'ellipseWidth', cx, wy, 0, wBox);
+        const hx = cx + rx + off;
+        ctx.save();
+        ctx.translate(hx, cy);
+        ctx.rotate(Math.PI / 2);
+        const hBox = drawMeasLabel(ctx, formatMeasurement(ry * 2), 0, 0, scale);
+        ctx.restore();
+        registerMeasLabel(recordInto, shape.id, 'ellipseHeight', hx, cy, Math.PI / 2, hBox);
+      }
       break;
     }
     case 'polygon':
@@ -874,16 +928,186 @@ function drawMeasurements(ctx, shape, scale) {
         if (len < 1) continue;
         const mx  = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
         const ang = Math.atan2(dy, dx);
+        const drawAng = ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang;
+        const lx = mx - Math.sin(ang) * off, ly = my + Math.cos(ang) * off;
         ctx.save();
-        ctx.translate(mx - Math.sin(ang) * off, my + Math.cos(ang) * off);
-        ctx.rotate(ang > Math.PI / 2 || ang < -Math.PI / 2 ? ang + Math.PI : ang);
-        drawMeasLabel(ctx, formatMeasurement(len), 0, 0, scale);
+        ctx.translate(lx, ly);
+        ctx.rotate(drawAng);
+        const box = drawMeasLabel(ctx, formatMeasurement(len), 0, 0, scale);
         ctx.restore();
+        registerMeasLabel(recordInto, shape.id, 'segment', lx, ly, drawAng, box, i);
       }
       break;
     }
   }
 }
+
+// ── Measurement label editing ────────────────────────────────────────────────
+function hitTestMeasurementLabel(wx, wy) {
+  for (let i = state.measurementLabels.length - 1; i >= 0; i--) {
+    const l = state.measurementLabels[i];
+    const dx = wx - l.x, dy = wy - l.y;
+    const cos = Math.cos(-l.angle), sin = Math.sin(-l.angle);
+    const lx = dx * cos - dy * sin;
+    const ly = dx * sin + dy * cos;
+    if (Math.abs(lx) <= l.halfW && Math.abs(ly) <= l.halfH) return l;
+  }
+  return null;
+}
+
+// Current world-space length/width/height for whatever dimension a label
+// represents, read fresh from the shape (not the cached label) so the edit
+// box always starts from the live value.
+function getShapeDimensionWorld(shape, dimension, segmentIndex) {
+  switch (dimension) {
+    case 'length':
+      return Math.hypot(shape.x2 - shape.x1, shape.y2 - shape.y1);
+    case 'width':
+      return Math.abs(shape.x2 - shape.x1);
+    case 'height':
+      return Math.abs(shape.y2 - shape.y1);
+    case 'diameter':
+      return Math.abs(shape.x2 - shape.x1);
+    case 'ellipseWidth':
+      return Math.abs(shape.x2 - shape.x1);
+    case 'ellipseHeight':
+      return Math.abs(shape.y2 - shape.y1);
+    case 'segment': {
+      const pts = shape.points;
+      const i2 = (segmentIndex + 1) % pts.length;
+      return Math.hypot(pts[i2].x - pts[segmentIndex].x, pts[i2].y - pts[segmentIndex].y);
+    }
+    default:
+      return 0;
+  }
+}
+
+// Mutates the shape so the given dimension matches newWorld (world units),
+// preserving direction/center as appropriate per shape type.
+function applyMeasurementEdit(shape, dimension, segmentIndex, newWorld) {
+  if (!(newWorld > 0)) return false;
+  switch (dimension) {
+    case 'length': {
+      const dx = shape.x2 - shape.x1, dy = shape.y2 - shape.y1;
+      const cur = Math.hypot(dx, dy);
+      if (cur < 0.001) return false;
+      const k = newWorld / cur;
+      shape.x2 = shape.x1 + dx * k;
+      shape.y2 = shape.y1 + dy * k;
+      return true;
+    }
+    case 'width': {
+      const sign = Math.sign(shape.x2 - shape.x1) || 1;
+      shape.x2 = shape.x1 + sign * newWorld;
+      return true;
+    }
+    case 'height': {
+      const sign = Math.sign(shape.y2 - shape.y1) || 1;
+      shape.y2 = shape.y1 + sign * newWorld;
+      return true;
+    }
+    case 'diameter': {
+      const cx = (shape.x1 + shape.x2) / 2, cy = (shape.y1 + shape.y2) / 2;
+      const r = newWorld / 2;
+      shape.x1 = cx - r; shape.x2 = cx + r;
+      shape.y1 = cy - r; shape.y2 = cy + r;
+      return true;
+    }
+    case 'ellipseWidth': {
+      const cx = (shape.x1 + shape.x2) / 2;
+      const r = newWorld / 2;
+      shape.x1 = cx - r; shape.x2 = cx + r;
+      return true;
+    }
+    case 'ellipseHeight': {
+      const cy = (shape.y1 + shape.y2) / 2;
+      const r = newWorld / 2;
+      shape.y1 = cy - r; shape.y2 = cy + r;
+      return true;
+    }
+    case 'segment': {
+      const pts = shape.points;
+      const i2 = (segmentIndex + 1) % pts.length;
+      const p1 = pts[segmentIndex], p2 = pts[i2];
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const cur = Math.hypot(dx, dy);
+      if (cur < 0.001) return false;
+      const k = newWorld / cur;
+      pts[i2] = { x: p1.x + dx * k, y: p1.y + dy * k };
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+let editingLabel = null; // { shapeId, dimension, segmentIndex } while measureEditWrap is open
+
+function openMeasurementEdit(label) {
+  const found = findShapeById(label.shapeId);
+  if (!found) return;
+
+  editingLabel = { shapeId: label.shapeId, dimension: label.dimension, segmentIndex: label.segmentIndex };
+  state.selection = [label.shapeId];
+  updateSelectionPanel();
+  redrawOverlay();
+
+  const currentWorld = getShapeDimensionWorld(found.shape, label.dimension, label.segmentIndex);
+  measureEditInput.value = formatMeasurementNumber(currentWorld);
+  measureEditUnit.textContent = state.scale.unit;
+
+  const s = worldToScreen(label.x, label.y);
+  measureEditWrap.style.display = 'flex';
+  // Position after showing so offsetWidth/Height are accurate
+  const w = measureEditWrap.offsetWidth || 90;
+  const h = measureEditWrap.offsetHeight || 28;
+  measureEditWrap.style.left = Math.round(s.x - w / 2) + 'px';
+  measureEditWrap.style.top  = Math.round(s.y - h / 2) + 'px';
+
+  measureEditInput.focus();
+  measureEditInput.select();
+}
+
+function closeMeasurementEdit() {
+  // Order matters: null the flag before blurring, so the blur handler's
+  // deferred commit sees editingLabel already cleared and no-ops instead of
+  // double-processing. Explicit blur matters because hiding a focused
+  // input via display:none doesn't reliably move focus away on its own —
+  // leaving it focused would swallow the next keyboard shortcut (e.g.
+  // Ctrl+Z), since the global handler ignores shortcuts while an input has
+  // focus.
+  editingLabel = null;
+  measureEditWrap.style.display = 'none';
+  measureEditInput.blur();
+}
+
+function commitMeasurementEdit() {
+  if (!editingLabel) return;
+  const val = parseFloat(measureEditInput.value);
+  const label = editingLabel;
+  closeMeasurementEdit();
+  if (!(val > 0)) return;
+
+  const found = findShapeById(label.shapeId);
+  if (!found) return;
+  const newWorld = realToWorldUnits(val);
+  const changed = applyMeasurementEdit(found.shape, label.dimension, label.segmentIndex, newWorld);
+  if (changed) {
+    saveHistory();
+    redrawMain();
+    redrawOverlay();
+  }
+}
+
+measureEditInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); commitMeasurementEdit(); }
+  if (e.key === 'Escape') { e.preventDefault(); closeMeasurementEdit(); }
+});
+measureEditInput.addEventListener('blur', () => {
+  // Slight delay so a click that also blurs (e.g. hitting Enter via a
+  // virtual keyboard "done" button) still resolves via keydown first.
+  setTimeout(() => { if (editingLabel) commitMeasurementEdit(); }, 0);
+});
 
 // ── Render ────────────────────────────────────────────────────────────────────
 function redrawGrid() {
@@ -947,11 +1171,12 @@ function redrawMain() {
   mCtx.translate(state.pan.x, state.pan.y);
   mCtx.scale(state.zoom, state.zoom);
 
+  state.measurementLabels = [];
   // Draw the layer tree bottom-to-top (top of the Layers panel = on top)
   paintLayerTree(state.layers, layer => {
     for (const shape of layer.shapes) {
       drawShape(mCtx, shape, layer.color, state.zoom);
-      drawMeasurements(mCtx, shape, state.zoom);
+      drawMeasurements(mCtx, shape, state.zoom, state.measurementLabels);
     }
   });
   mCtx.restore();
@@ -1267,6 +1492,20 @@ function onPointerDown(e) {
   }
 
   if (state.tool === 'select') {
+    // A click on a measurement label opens an inline editor instead of
+    // selecting/moving — use the raw (unsnapped) point since labels aren't
+    // grid-aligned.
+    const labelHit = hitTestMeasurementLabel(pos.rawX, pos.rawY);
+    if (labelHit) {
+      // Prevent the browser's default mousedown focus-handling, which would
+      // otherwise immediately blur the input we're about to focus below
+      // (canvas isn't normally focusable, so default handling steals focus
+      // right back and the blur handler closes the editor before it opens).
+      if (typeof e.preventDefault === 'function') e.preventDefault();
+      openMeasurementEdit(labelHit);
+      return;
+    }
+
     // If exactly one shape is selected, a click on one of its handles
     // resizes instead of re-selecting/moving.
     if (state.selection.length === 1) {
@@ -1555,29 +1794,39 @@ textInput.addEventListener('keydown', e => {
     commitText();
   }
   if (e.key === 'Escape') {
-    textInput.style.display = 'none';
     textPending = null;
+    textInput.style.display = 'none';
+    textInput.blur();
   }
 });
 
 textInput.addEventListener('blur', () => {
   if (textInput.value.trim()) commitText();
-  else { textInput.style.display = 'none'; textPending = null; }
+  else { textPending = null; textInput.style.display = 'none'; }
 });
 
 function commitText() {
+  // Capture + clear textPending before hiding/blurring: blur() dispatches
+  // synchronously, which can re-enter this function via the blur listener
+  // above — nulling textPending first makes that re-entrant call a no-op
+  // instead of double-committing. Hiding via display:none alone doesn't
+  // reliably move focus away, so without an explicit blur() the next
+  // keyboard shortcut (Ctrl+Z, tool hotkeys) would get swallowed by the
+  // global handler's "ignore shortcuts while an input is focused" guard.
   const val = textInput.value.trim();
+  const pending = textPending;
+  textPending = null;
   textInput.style.display = 'none';
-  if (!val || !textPending) return;
+  textInput.blur();
+  if (!val || !pending) return;
   const layer = activeLayer();
   if (!layer) return;
   layer.shapes.push({
     id: uid(), ...currentShapeProps(),
     type: 'text', text: val,
-    x: textPending.wx, y: textPending.wy,
+    x: pending.wx, y: pending.wy,
     fontSize: state.props.fontSize,
   });
-  textPending = null;
   saveHistory();
   redrawMain();
 }

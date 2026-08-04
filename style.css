@@ -453,6 +453,36 @@ hr { border-color: var(--border); margin: 6px 0; }
   font-family: inherit;
 }
 
+#measureEditWrap {
+  position: fixed;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255,255,255,0.97);
+  border: 2px solid var(--accent);
+  border-radius: 5px;
+  padding: 3px 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+#measureEditInput {
+  width: 64px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #1a1a2e;
+  font-size: 13px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+#measureEditUnit {
+  color: #5a5a70;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ── Autosave ── */
 .autosave-status {
   font-size: 11px;
