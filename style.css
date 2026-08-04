@@ -302,7 +302,7 @@ hr { border-color: var(--border); margin: 6px 0; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-height: 0;
+  min-height: 180px;
 }
 
 #layers-list {
@@ -339,6 +339,24 @@ hr { border-color: var(--border); margin: 6px 0; }
 .layer-item.hidden {
   opacity: 0.4;
 }
+
+.layer-expand-btn {
+  width: 14px;
+  height: 18px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.layer-expand-btn:hover { color: var(--text); }
+.layer-expand-btn.spacer { cursor: default; visibility: hidden; }
 
 .layer-visibility {
   width: 18px;
@@ -493,8 +511,10 @@ hr { border-color: var(--border); margin: 6px 0; }
 
 /* ── Symbol Library ── */
 #symbols-panel {
-  flex-shrink: 0;
+  flex-shrink: 1;
+  flex-basis: 240px;
   max-height: 320px;
+  min-height: 90px;
   display: flex;
   flex-direction: column;
   overflow: hidden;

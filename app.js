@@ -192,13 +192,12 @@ function addShapeCandidates(pts, s) {
 
 function getSnapCandidates(excludeIds) {
   const pts = [];
-  for (const layer of state.layers) {
-    if (!layer.visible) continue;
+  forEachVisibleLayer(state.layers, layer => {
     for (const s of layer.shapes) {
       if (excludeIds && excludeIds.has(s.id)) continue;
       addShapeCandidates(pts, s);
     }
-  }
+  });
   // Let an in-progress polygon/wall snap back onto its own earlier points (closing the loop)
   if ((state.tool === 'polygon' || state.tool === 'wall') && drag.polyPoints.length) {
     drag.polyPoints.forEach(p => pts.push({ x: p.x, y: p.y }));
@@ -248,20 +247,115 @@ function resizeCanvases() {
   redrawAll();
 }
 
-// ── Layer helpers ─────────────────────────────────────────────────────────────
-function activeLayer() {
-  return state.layers.find(l => l.id === state.activeLayerId) || null;
+// ── Layer tree helpers ───────────────────────────────────────────────────────
+// Layers form a tree: each node has shapes: [] (its own content) and
+// children: [] (nested sub-layers, e.g. per-circuit layers under
+// "Electrical"). A node can hold shapes AND have children at the same time.
+// Sibling order follows the existing convention: index 0 = topmost/visually
+// on top. Within a node, children paint above (on top of) that node's own
+// shapes, so more-specific sub-layers read as sitting over the general one.
+
+function countAllLayers(nodes) {
+  let n = 0;
+  for (const node of nodes) {
+    n++;
+    if (node.children && node.children.length) n += countAllLayers(node.children);
+  }
+  return n;
 }
 
-function addLayer(name, color) {
+function findLayerById(nodes, id) {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    if (node.children && node.children.length) {
+      const found = findLayerById(node.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// Returns { array, index } for whichever sibling array currently contains id
+// (state.layers itself, or some layer's children array at any depth).
+function findSiblingSlot(nodes, id) {
+  const idx = nodes.findIndex(n => n.id === id);
+  if (idx !== -1) return { array: nodes, index: idx };
+  for (const node of nodes) {
+    if (node.children && node.children.length) {
+      const found = findSiblingSlot(node.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function removeLayerById(nodes, id) {
+  const idx = nodes.findIndex(n => n.id === id);
+  if (idx !== -1) { nodes.splice(idx, 1); return true; }
+  for (const node of nodes) {
+    if (node.children && node.children.length && removeLayerById(node.children, id)) return true;
+  }
+  return false;
+}
+
+// Visits every node depth-first, own shapes painting before (below) children,
+// later siblings before (below) earlier siblings — i.e. bottom-to-top paint
+// order. visibility cascades: a node is only passed to fn if it and every
+// ancestor is visible.
+function paintLayerTree(nodes, fn, ancestorVisible = true) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i];
+    const effectiveVisible = ancestorVisible && node.visible;
+    if (effectiveVisible) fn(node);
+    if (node.children && node.children.length) paintLayerTree(node.children, fn, effectiveVisible);
+  }
+}
+
+// Opposite traversal order (topmost-first: children before own shapes,
+// earlier siblings before later ones) for hit-testing, where the caller
+// wants the first match under the cursor. fn returning true stops the walk.
+function forEachLayerTopFirst(nodes, fn, ancestorVisible = true) {
+  for (const node of nodes) {
+    const effectiveVisible = ancestorVisible && node.visible;
+    if (node.children && node.children.length) {
+      if (forEachLayerTopFirst(node.children, fn, effectiveVisible)) return true;
+    }
+    if (effectiveVisible && fn(node)) return true;
+  }
+  return false;
+}
+
+// Visits every visible node (any order) — for accumulating across all
+// layers (snap candidates, eraser, rubber-band) where order doesn't matter.
+function forEachVisibleLayer(nodes, fn, ancestorVisible = true) {
+  for (const node of nodes) {
+    const effectiveVisible = ancestorVisible && node.visible;
+    if (effectiveVisible) fn(node);
+    if (node.children && node.children.length) forEachVisibleLayer(node.children, fn, effectiveVisible);
+  }
+}
+
+function activeLayer() {
+  return findLayerById(state.layers, state.activeLayerId);
+}
+
+function addLayer(name, color, parentId) {
   const layer = {
     id: uid(),
-    name: name || `Layer ${state.layers.length + 1}`,
+    name: name || `Layer ${countAllLayers(state.layers) + 1}`,
     visible: true,
-    color: color || LAYER_COLORS[state.layers.length % LAYER_COLORS.length],
+    color: color || LAYER_COLORS[countAllLayers(state.layers) % LAYER_COLORS.length],
     shapes: [],
+    children: [],
+    expanded: true,
   };
-  state.layers.unshift(layer);
+  const parent = parentId ? findLayerById(state.layers, parentId) : null;
+  if (parent) {
+    parent.children.unshift(layer);
+    parent.expanded = true;
+  } else {
+    state.layers.unshift(layer);
+  }
   state.activeLayerId = layer.id;
   saveHistory();
   renderLayers();
@@ -270,11 +364,23 @@ function addLayer(name, color) {
 }
 
 function findShapeById(id) {
-  for (const layer of state.layers) {
-    const shape = layer.shapes.find(s => s.id === id);
-    if (shape) return { layer, shape };
+  let result = null;
+  forEachVisibleLayerIncludingHidden(state.layers, node => {
+    if (result) return;
+    const shape = node.shapes.find(s => s.id === id);
+    if (shape) result = { layer: node, shape };
+  });
+  return result;
+}
+
+// Like forEachVisibleLayer but ignores visibility entirely — used by
+// findShapeById, which must find a shape regardless of whether its layer
+// (or an ancestor) is currently hidden.
+function forEachVisibleLayerIncludingHidden(nodes, fn) {
+  for (const node of nodes) {
+    fn(node);
+    if (node.children && node.children.length) forEachVisibleLayerIncludingHidden(node.children, fn);
   }
-  return null;
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
@@ -318,7 +424,7 @@ function redo() {
 }
 
 // ── Autosave (localStorage) ──────────────────────────────────────────────────
-const AUTOSAVE_KEY = 'floorplan-autosave-v1';
+const AUTOSAVE_KEY = 'floorplan-autosave-v2'; // v2: layers became a tree (children/expanded)
 let autosaveTimer = null;
 
 function setAutosaveStatus(text, isError) {
@@ -841,15 +947,13 @@ function redrawMain() {
   mCtx.translate(state.pan.x, state.pan.y);
   mCtx.scale(state.zoom, state.zoom);
 
-  // Draw layers bottom-to-top (array index 0 = top layer visually, render reversed)
-  for (let i = state.layers.length - 1; i >= 0; i--) {
-    const layer = state.layers[i];
-    if (!layer.visible) continue;
+  // Draw the layer tree bottom-to-top (top of the Layers panel = on top)
+  paintLayerTree(state.layers, layer => {
     for (const shape of layer.shapes) {
       drawShape(mCtx, shape, layer.color, state.zoom);
       drawMeasurements(mCtx, shape, state.zoom);
     }
-  }
+  });
   mCtx.restore();
 }
 
@@ -1179,15 +1283,14 @@ function onPointerDown(e) {
       }
     }
 
-    // Hit test visible layers
+    // Hit test visible layers, topmost layer/shape first
     let hit = null;
-    for (const layer of state.layers) {
-      if (!layer.visible) continue;
+    forEachLayerTopFirst(state.layers, layer => {
       for (let i = layer.shapes.length - 1; i >= 0; i--) {
-        if (hitTest(layer.shapes[i], pos.wx, pos.wy)) { hit = layer.shapes[i]; break; }
+        if (hitTest(layer.shapes[i], pos.wx, pos.wy)) { hit = layer.shapes[i]; return true; }
       }
-      if (hit) break;
-    }
+      return false;
+    });
     if (hit) {
       if (e.shiftKey) {
         if (!state.selection.includes(hit.id)) state.selection.push(hit.id);
@@ -1365,14 +1468,13 @@ function onPointerUp(e) {
     const rx2 = Math.max(drag.rubberStart.x, drag.rubberEnd.x);
     const ry2 = Math.max(drag.rubberStart.y, drag.rubberEnd.y);
     const caught = [];
-    for (const layer of state.layers) {
-      if (!layer.visible) continue;
+    forEachVisibleLayer(state.layers, layer => {
       for (const s of layer.shapes) {
         const b = shapeBounds(s);
         const intersects = b.x < rx2 && b.x + b.w > rx1 && b.y < ry2 && b.y + b.h > ry1;
         if (intersects) caught.push(s.id);
       }
-    }
+    });
     if (drag.rubberAdditive) {
       for (const id of caught) if (!state.selection.includes(id)) state.selection.push(id);
     } else {
@@ -1428,12 +1530,11 @@ function onWheel(e) {
 // ── Eraser ────────────────────────────────────────────────────────────────────
 function eraseAt(wx, wy) {
   let changed = false;
-  for (const layer of state.layers) {
-    if (!layer.visible) continue;
+  forEachVisibleLayer(state.layers, layer => {
     const before = layer.shapes.length;
     layer.shapes = layer.shapes.filter(s => !hitTest(s, wx, wy));
     if (layer.shapes.length !== before) changed = true;
-  }
+  });
   if (changed) { saveHistory(); redrawMain(); }
 }
 
@@ -1521,9 +1622,9 @@ function updateSelectionPanel() {
 function deleteSelected() {
   if (!state.selection.length) return;
   for (const id of state.selection) {
-    for (const layer of state.layers) {
+    forEachVisibleLayerIncludingHidden(state.layers, layer => {
       layer.shapes = layer.shapes.filter(s => s.id !== id);
-    }
+    });
   }
   state.selection = [];
   saveHistory();
@@ -1536,7 +1637,7 @@ document.getElementById('deleteSelBtn').addEventListener('click', deleteSelected
 
 moveToLayerSel.addEventListener('change', () => {
   const targetId = moveToLayerSel.value;
-  const target   = state.layers.find(l => l.id === targetId);
+  const target   = findLayerById(state.layers, targetId);
   if (!target) return;
   for (const id of state.selection) {
     const found = findShapeById(id);
@@ -1549,9 +1650,15 @@ moveToLayerSel.addEventListener('change', () => {
 });
 
 function updateMoveToLayer() {
-  moveToLayerSel.innerHTML = state.layers
-    .map(l => `<option value="${l.id}">${l.name}</option>`)
-    .join('');
+  const options = [];
+  (function walk(nodes, depth) {
+    for (const node of nodes) {
+      const indent = '&nbsp;&nbsp;'.repeat(depth) + (depth ? '↳ ' : '');
+      options.push(`<option value="${node.id}">${indent}${node.name}</option>`);
+      if (node.children && node.children.length) walk(node.children, depth + 1);
+    }
+  })(state.layers, 0);
+  moveToLayerSel.innerHTML = options.join('');
 }
 
 // ── Properties panel ──────────────────────────────────────────────────────────
@@ -1692,14 +1799,12 @@ function exportPNG() {
   ctx.save();
   ctx.translate(state.pan.x, state.pan.y);
   ctx.scale(state.zoom, state.zoom);
-  for (let i = state.layers.length - 1; i >= 0; i--) {
-    const layer = state.layers[i];
-    if (!layer.visible) continue;
+  paintLayerTree(state.layers, layer => {
     for (const shape of layer.shapes) {
       drawShape(ctx, shape, layer.color, state.zoom);
       drawMeasurements(ctx, shape, state.zoom);
     }
-  }
+  });
   ctx.restore();
 
   tmp.toBlob(blob => {
@@ -1743,10 +1848,33 @@ function showModal(title = 'New Layer', defaultVal = '', onOk) {
 
 function renderLayers() {
   layersList.innerHTML = '';
-  state.layers.forEach((layer, index) => {
+  renderLayerRows(state.layers, 0);
+}
+
+function renderLayerRows(nodes, depth) {
+  nodes.forEach(layer => {
+    const hasChildren = layer.children && layer.children.length > 0;
+
     const item = document.createElement('div');
     item.className = 'layer-item' + (layer.id === state.activeLayerId ? ' active' : '') + (!layer.visible ? ' hidden' : '');
     item.dataset.id = layer.id;
+    item.style.paddingLeft = (8 + depth * 15) + 'px';
+
+    // Expand/collapse (only meaningful once it has children, but always
+    // reserve the space so sibling rows stay aligned)
+    const expandBtn = document.createElement('button');
+    expandBtn.className = 'layer-expand-btn';
+    if (hasChildren) {
+      expandBtn.textContent = layer.expanded === false ? '▸' : '▾';
+      expandBtn.title = layer.expanded === false ? 'Expand' : 'Collapse';
+      expandBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        layer.expanded = layer.expanded === false ? true : false;
+        renderLayers();
+      });
+    } else {
+      expandBtn.classList.add('spacer');
+    }
 
     // Visibility toggle
     const vis = document.createElement('div');
@@ -1754,6 +1882,7 @@ function renderLayers() {
     vis.innerHTML = layer.visible
       ? `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
       : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+    vis.title = layer.visible ? 'Hide (also hides sub-layers)' : 'Show';
     vis.addEventListener('click', e => { e.stopPropagation(); layer.visible = !layer.visible; renderLayers(); redrawMain(); });
 
     // Color swatch
@@ -1789,6 +1918,15 @@ function renderLayers() {
     const actions = document.createElement('div');
     actions.className = 'layer-actions';
 
+    const addSubBtn = document.createElement('button');
+    addSubBtn.className = 'layer-action-btn add';
+    addSubBtn.title   = 'Add sub-layer';
+    addSubBtn.innerHTML = '+';
+    addSubBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      showModal('New Sub-layer', '', val => addLayer(val || undefined, undefined, layer.id));
+    });
+
     const upBtn = document.createElement('button');
     upBtn.className = 'layer-action-btn up';
     upBtn.title   = 'Move up';
@@ -1807,15 +1945,20 @@ function renderLayers() {
     delBtn.innerHTML = '×';
     delBtn.addEventListener('click', e => {
       e.stopPropagation();
-      if (state.layers.length === 1) return alert('Cannot delete the last layer.');
-      if (!confirm(`Delete layer "${layer.name}" and all its shapes?`)) return;
-      state.layers = state.layers.filter(l => l.id !== layer.id);
-      if (state.activeLayerId === layer.id) state.activeLayerId = state.layers[0]?.id || null;
+      if (countAllLayers(state.layers) === 1) return alert('Cannot delete the last layer.');
+      const childCount = hasChildren ? countAllLayers(layer.children) : 0;
+      const msg = childCount
+        ? `Delete layer "${layer.name}", its ${childCount} sub-layer${childCount === 1 ? '' : 's'}, and all their shapes?`
+        : `Delete layer "${layer.name}" and all its shapes?`;
+      if (!confirm(msg)) return;
+      const wasActiveOrAncestor = state.activeLayerId === layer.id || findLayerById(layer.children, state.activeLayerId);
+      removeLayerById(state.layers, layer.id);
+      if (wasActiveOrAncestor) state.activeLayerId = state.layers[0]?.id || null;
       saveHistory(); renderLayers(); updateMoveToLayer(); redrawAll();
     });
 
-    actions.append(upBtn, downBtn, delBtn);
-    item.append(vis, swatchWrapper, nameEl, actions);
+    actions.append(addSubBtn, upBtn, downBtn, delBtn);
+    item.append(expandBtn, vis, swatchWrapper, nameEl, actions);
 
     item.addEventListener('click', () => {
       state.activeLayerId = layer.id;
@@ -1823,14 +1966,20 @@ function renderLayers() {
     });
 
     layersList.appendChild(item);
+
+    if (hasChildren && layer.expanded !== false) {
+      renderLayerRows(layer.children, depth + 1);
+    }
   });
 }
 
 function moveLayer(id, dir) {
-  const idx = state.layers.findIndex(l => l.id === id);
-  const to  = idx + dir;
-  if (to < 0 || to >= state.layers.length) return;
-  [state.layers[idx], state.layers[to]] = [state.layers[to], state.layers[idx]];
+  const slot = findSiblingSlot(state.layers, id);
+  if (!slot) return;
+  const { array, index } = slot;
+  const to = index + dir;
+  if (to < 0 || to >= array.length) return;
+  [array[index], array[to]] = [array[to], array[index]];
   saveHistory();
   renderLayers();
   redrawMain();
