@@ -949,10 +949,12 @@ function redrawOverlay() {
     oCtx.restore();
   }
 
-  // Selection highlights
+  // Selection highlights (skip shapes on a currently-hidden layer — the
+  // selection itself is preserved so it's there if you re-show the layer,
+  // but there's no visible shape to draw a box around in the meantime)
   for (const id of state.selection) {
     const found = findShapeById(id);
-    if (!found) continue;
+    if (!found || !found.layer.visible) continue;
     const b = shapeBounds(found.shape);
     oCtx.save();
     oCtx.strokeStyle = '#7c6aff';
@@ -1165,7 +1167,7 @@ function onPointerDown(e) {
     // resizes instead of re-selecting/moving.
     if (state.selection.length === 1) {
       const found = findShapeById(state.selection[0]);
-      if (found) {
+      if (found && found.layer.visible) {
         const handle = hitTestHandles(found.shape, pos.wx, pos.wy);
         if (handle) {
           drag.active = true;
