@@ -435,6 +435,50 @@ hr { border-color: var(--border); margin: 6px 0; }
   font-family: inherit;
 }
 
+/* ── Autosave ── */
+.autosave-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-right: 8px;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+
+.autosave-status.error {
+  color: var(--danger);
+}
+
+.autosave-toast {
+  position: fixed;
+  top: calc(var(--toolbar-h) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px 8px 14px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+}
+
+.autosave-toast button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.autosave-toast button:hover { background: var(--accent-hover); }
+
 /* ── Scale panel ── */
 #scale-panel .prop-row input[type="number"] {
   width: 60px;

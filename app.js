@@ -276,6 +276,7 @@ function saveHistory() {
   state.history.push(snapshot());
   if (state.history.length > 100) state.history.shift();
   state.future = [];
+  scheduleAutosave();
 }
 
 function undo() {
@@ -289,6 +290,7 @@ function undo() {
   renderLayers();
   updateMoveToLayer();
   redrawAll();
+  scheduleAutosave();
 }
 
 function redo() {
@@ -302,6 +304,81 @@ function redo() {
   renderLayers();
   updateMoveToLayer();
   redrawAll();
+  scheduleAutosave();
+}
+
+// ── Autosave (localStorage) ──────────────────────────────────────────────────
+const AUTOSAVE_KEY = 'floorplan-autosave-v1';
+let autosaveTimer = null;
+
+function setAutosaveStatus(text, isError) {
+  const el = document.getElementById('autosaveStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('error', !!isError);
+}
+
+function scheduleAutosave() {
+  setAutosaveStatus('Saving…');
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    try {
+      const data = JSON.stringify({
+        layers: state.layers,
+        scale: state.scale,
+        snapDivisions: state.snapDivisions,
+        savedAt: Date.now(),
+      });
+      localStorage.setItem(AUTOSAVE_KEY, data);
+      setAutosaveStatus('Saved');
+    } catch (err) {
+      setAutosaveStatus('Autosave failed', true);
+    }
+  }, 600);
+}
+
+function tryRestoreAutosave() {
+  let raw;
+  try { raw = localStorage.getItem(AUTOSAVE_KEY); } catch { return false; }
+  if (!raw) return false;
+  try {
+    const data = JSON.parse(raw);
+    if (!data.layers || !data.layers.length) return false;
+    state.layers        = data.layers;
+    state.activeLayerId = data.layers[0]?.id || null;
+    if (data.scale) Object.assign(state.scale, data.scale);
+    if (data.snapDivisions) state.snapDivisions = data.snapDivisions;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearAutosaveAndReset() {
+  if (!confirm('Start a new floorplan? This clears the current drawing and autosave. Export/Save first if you want to keep it.')) return;
+  try { localStorage.removeItem(AUTOSAVE_KEY); } catch {}
+  state.layers = [];
+  state.selection = [];
+  addLayer('Base / Walls', '#e0e0e0');
+  addLayer('Windows & Doors', '#6ab8ff');
+  addLayer('In-Floor Heat', '#ff976a');
+  addLayer('Electrical', '#ffca6a');
+  state.history = [snapshot()];
+  state.future = [];
+  renderLayers();
+  updateMoveToLayer();
+  updateSelectionPanel();
+  redrawAll();
+  setAutosaveStatus('Saved');
+}
+
+function showRestoredToast() {
+  const toast = document.getElementById('autosave-toast');
+  if (!toast) return;
+  toast.style.display = 'flex';
+  const hide = () => { toast.style.display = 'none'; };
+  document.getElementById('toastDismiss').onclick = hide;
+  setTimeout(hide, 6000);
 }
 
 // ── Shape drawing ─────────────────────────────────────────────────────────────
@@ -1778,11 +1855,15 @@ function init() {
   resizeCanvases();
   window.addEventListener('resize', resizeCanvases);
 
-  // Default layers
-  addLayer('Base / Walls', '#e0e0e0');
-  addLayer('Windows & Doors', '#6ab8ff');
-  addLayer('In-Floor Heat', '#ff976a');
-  addLayer('Electrical', '#ffca6a');
+  const restored = tryRestoreAutosave();
+  if (!restored) {
+    addLayer('Base / Walls', '#e0e0e0');
+    addLayer('Windows & Doors', '#6ab8ff');
+    addLayer('In-Floor Heat', '#ff976a');
+    addLayer('Electrical', '#ffca6a');
+  } else {
+    state.activeLayerId = state.layers[0]?.id || null;
+  }
 
   // History baseline
   state.history = [snapshot()];
@@ -1795,6 +1876,11 @@ function init() {
   initScaleControls();
   setTool('select');
   redrawAll();
+  setAutosaveStatus('Saved');
+
+  if (restored) showRestoredToast();
+
+  document.getElementById('newBtn').addEventListener('click', clearAutosaveAndReset);
 }
 
 init();
