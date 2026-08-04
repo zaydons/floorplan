@@ -36,6 +36,9 @@
         <button class="tool-btn" data-tool="text" title="Text (T)">
           <svg viewBox="0 0 24 24"><text x="4" y="18" font-size="16" font-weight="bold" fill="currentColor">T</text></svg>
         </button>
+        <button class="tool-btn" data-tool="sym" title="Place Symbol (M)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="9" y1="9" x2="9" y2="15"/><line x1="12" y1="9" x2="12" y2="15"/><line x1="8" y1="9" x2="10" y2="9"/><line x1="8" y1="12" x2="11" y2="12"/><line x1="8" y1="15" x2="10" y2="15"/><line x1="13" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="13" y2="15"/></svg>
+        </button>
       </div>
       <div class="toolbar-group">
         <span class="toolbar-label">Edit</span>
@@ -131,6 +134,19 @@
           </div>
         </div>
 
+        <!-- Symbol Library -->
+        <div class="panel" id="symbols-panel">
+          <div class="panel-header">
+            <span>Symbols</span>
+            <div class="sym-controls">
+              <label class="sym-ctrl-label">Size</label>
+              <input type="number" id="symSize" min="10" max="200" step="5" value="40" title="Symbol size (world units)">
+              <button id="symRotateBtn" title="Rotate 90° (R key)">↻ <span id="symRotLabel">0°</span></button>
+            </div>
+          </div>
+          <div id="symbols-content"></div>
+        </div>
+
         <!-- Layers -->
         <div class="panel" id="layers-panel">
           <div class="panel-header">
@@ -158,6 +174,7 @@
     </div>
   </div>
 
+  <script src="symbols.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

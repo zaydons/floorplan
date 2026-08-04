@@ -22,6 +22,9 @@ const state = {
   history: [],         // snapshots for undo
   future: [],          // snapshots for redo
   selection: [],       // selected shape ids
+  currentSymbol: 'outlet',
+  symbolRotation: 0,   // degrees: 0 / 90 / 180 / 270
+  mouseWorld: null,    // { x, y } for symbol placement preview
   props: {
     stroke: '#1a1a2e',
     strokeWidth: 2,
@@ -29,6 +32,7 @@ const state = {
     fillEnabled: false,
     dash: 'solid',
     fontSize: 14,
+    symbolSize: 40,
   },
 };
 
@@ -232,6 +236,22 @@ function drawShape(ctx, shape, layerColor, scale = 1) {
       ctx.fillText(shape.text, shape.x, shape.y);
       break;
     }
+    case 'symbol': {
+      const sym = SYMBOLS.find(s => s.key === shape.symbolKey);
+      if (!sym) break;
+      ctx.save();
+      ctx.translate(shape.x, shape.y);
+      if (shape.rotation) ctx.rotate(shape.rotation * Math.PI / 180);
+      ctx.strokeStyle  = shape.stroke;
+      ctx.lineWidth    = shape.strokeWidth / scale;
+      ctx.fillStyle    = shape.stroke;
+      ctx.setLineDash([]);
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      sym.draw(ctx, (shape.size || 40) / 2);
+      ctx.restore();
+      break;
+    }
   }
   ctx.restore();
 }
@@ -266,6 +286,10 @@ function shapeBounds(shape) {
     }
     case 'text':
       return { x: shape.x - 4, y: shape.y - 20, w: 120, h: 24 };
+    case 'symbol': {
+      const r = (shape.size || 40) / 2 + 4;
+      return { x: shape.x - r, y: shape.y - r, w: r * 2, h: r * 2 };
+    }
     default:
       return { x: 0, y: 0, w: 0, h: 0 };
   }
@@ -338,6 +362,27 @@ function redrawOverlay() {
   const H = overlayCanvas.height;
   oCtx.clearRect(0, 0, W, H);
 
+  // Symbol placement preview
+  if (state.tool === 'sym' && state.mouseWorld && state.currentSymbol) {
+    const sym = SYMBOLS.find(s => s.key === state.currentSymbol);
+    if (sym) {
+      oCtx.save();
+      oCtx.translate(state.pan.x, state.pan.y);
+      oCtx.scale(state.zoom, state.zoom);
+      oCtx.translate(state.mouseWorld.x, state.mouseWorld.y);
+      if (state.symbolRotation) oCtx.rotate(state.symbolRotation * Math.PI / 180);
+      oCtx.strokeStyle  = state.props.stroke;
+      oCtx.lineWidth    = state.props.strokeWidth / state.zoom;
+      oCtx.fillStyle    = state.props.stroke;
+      oCtx.globalAlpha  = 0.5;
+      oCtx.setLineDash([]);
+      oCtx.textAlign    = 'center';
+      oCtx.textBaseline = 'middle';
+      sym.draw(oCtx, state.props.symbolSize / 2);
+      oCtx.restore();
+    }
+  }
+
   if (!state.selection.length && !drag.shape && !drag.polyPoints.length) return;
 
   oCtx.save();
@@ -405,7 +450,7 @@ function redrawAll() {
 const cursorMap = {
   select: 'default', pan: 'grab', line: 'crosshair',
   rect: 'crosshair', circle: 'crosshair', polygon: 'crosshair',
-  text: 'text', eraser: 'cell',
+  text: 'text', eraser: 'cell', sym: 'crosshair',
 };
 
 function setCursor(c) {
@@ -414,12 +459,13 @@ function setCursor(c) {
 
 // ── Tool switching ─────────────────────────────────────────────────────────────
 function setTool(tool) {
-  // Commit any in-progress polygon
   commitPolygon();
+  if (tool !== 'sym') state.mouseWorld = null;
   state.tool = tool;
   document.querySelectorAll('.tool-btn').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   setCursor();
   textPropRow.style.display = tool === 'text' ? 'flex' : 'none';
+  if (tool !== 'sym') redrawOverlay();
 }
 
 // ── Shape creation helpers ────────────────────────────────────────────────────
@@ -543,6 +589,24 @@ function onPointerDown(e) {
     return;
   }
 
+  if (state.tool === 'sym') {
+    const layer = activeLayer();
+    if (!layer || !state.currentSymbol) return;
+    layer.shapes.push({
+      id: uid(),
+      type: 'symbol',
+      symbolKey: state.currentSymbol,
+      x: pos.wx, y: pos.wy,
+      size: state.props.symbolSize,
+      rotation: state.symbolRotation,
+      stroke: state.props.stroke,
+      strokeWidth: state.props.strokeWidth,
+    });
+    saveHistory();
+    redrawMain();
+    return;
+  }
+
   if (state.tool === 'polygon') {
     drag.polyPoints.push({ x: pos.wx, y: pos.wy });
     redrawOverlay();
@@ -581,7 +645,7 @@ function onPointerMove(e) {
       if (s.x1 !== undefined) { s.x1 += dx; s.y1 += dy; }
       if (s.x2 !== undefined) { s.x2 += dx; s.y2 += dy; }
       if (s.points) s.points = s.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
-      if (s.type === 'text') { s.x += dx; s.y += dy; }
+      if (s.type === 'text' || s.type === 'symbol') { s.x += dx; s.y += dy; }
     }
     redrawMain(); redrawOverlay();
     return;
@@ -594,6 +658,13 @@ function onPointerMove(e) {
 
   if (drag.active && drag.shape) {
     updateShape(drag.shape, pos.wx, pos.wy, e);
+    redrawOverlay();
+    return;
+  }
+
+  // Symbol preview tracking
+  if (state.tool === 'sym') {
+    state.mouseWorld = { x: pos.wx, y: pos.wy };
     redrawOverlay();
     return;
   }
@@ -732,7 +803,15 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser' };
+  // R rotates symbol when sym tool active, otherwise switches to rect
+  if (e.key.toLowerCase() === 'r' && state.tool === 'sym') {
+    state.symbolRotation = (state.symbolRotation + 90) % 360;
+    document.getElementById('symRotLabel').textContent = state.symbolRotation + '°';
+    redrawOverlay();
+    return;
+  }
+
+  const map = { v:'select', h:'pan', l:'line', r:'rect', p:'polygon', c:'circle', t:'text', e:'eraser', m:'sym' };
   if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1041,6 +1120,69 @@ function moveLayer(id, dir) {
   redrawMain();
 }
 
+// ── Symbol Library UI ─────────────────────────────────────────────────────────
+function renderSymbolLibrary() {
+  const content = document.getElementById('symbols-content');
+  content.innerHTML = '';
+
+  SYMBOL_CATEGORIES.forEach(cat => {
+    const syms = SYMBOLS.filter(s => s.category === cat.id);
+    if (!syms.length) return;
+
+    const catEl = document.createElement('div');
+    catEl.className   = 'sym-category';
+    catEl.textContent = cat.label;
+    content.appendChild(catEl);
+
+    const grid = document.createElement('div');
+    grid.className = 'sym-grid';
+
+    syms.forEach(sym => {
+      const btn    = document.createElement('button');
+      btn.className = 'sym-btn' + (state.currentSymbol === sym.key ? ' active' : '');
+      btn.title     = sym.label;
+      btn.dataset.key = sym.key;
+
+      const cv  = document.createElement('canvas');
+      cv.width  = 36;
+      cv.height = 36;
+      const cx  = cv.getContext('2d');
+      cx.translate(18, 18);
+      cx.strokeStyle  = '#cdd6f4';
+      cx.fillStyle    = '#cdd6f4';
+      cx.lineWidth    = 1.5;
+      cx.textAlign    = 'center';
+      cx.textBaseline = 'middle';
+      try { sym.draw(cx, 13); } catch (_) {}
+
+      btn.appendChild(cv);
+      btn.addEventListener('click', () => {
+        state.currentSymbol = sym.key;
+        document.querySelectorAll('.sym-btn').forEach(b => b.classList.toggle('active', b.dataset.key === sym.key));
+        setTool('sym');
+      });
+
+      grid.appendChild(btn);
+    });
+
+    content.appendChild(grid);
+  });
+}
+
+function initSymbolControls() {
+  const sizeInput = document.getElementById('symSize');
+  sizeInput.value = state.props.symbolSize;
+  sizeInput.addEventListener('input', () => {
+    state.props.symbolSize = Math.max(10, parseInt(sizeInput.value) || 40);
+  });
+
+  document.getElementById('symRotateBtn').addEventListener('click', () => {
+    state.symbolRotation = (state.symbolRotation + 90) % 360;
+    document.getElementById('symRotLabel').textContent = state.symbolRotation + '°';
+    redrawOverlay();
+  });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   resizeCanvases();
@@ -1050,6 +1192,7 @@ function init() {
   addLayer('Base / Walls', '#e0e0e0');
   addLayer('Windows & Doors', '#6ab8ff');
   addLayer('In-Floor Heat', '#ff976a');
+  addLayer('Electrical', '#ffca6a');
 
   // History baseline
   state.history = [snapshot()];
@@ -1057,6 +1200,8 @@ function init() {
   renderLayers();
   updateMoveToLayer();
   updateSelectionPanel();
+  renderSymbolLibrary();
+  initSymbolControls();
   setTool('select');
   redrawAll();
 }
