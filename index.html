@@ -250,6 +250,24 @@
     </div>
   </div>
 
+  <!-- Export fallback modal — shown alongside the automatic download when the
+       page is embedded in an iframe (e.g. a preview), where a sandboxed frame
+       can silently block programmatic and even direct-click downloads with
+       no error at all. This gives a manual way to get the data out either
+       way: a real download link, a copy/save-able preview, and a hint. -->
+  <div id="export-modal-overlay" style="display:none">
+    <div id="export-modal">
+      <div id="export-modal-title">Export</div>
+      <div id="export-modal-hint"></div>
+      <div id="export-modal-body"></div>
+      <div id="export-modal-btns">
+        <button id="export-modal-copy" style="display:none">Copy to Clipboard</button>
+        <a id="export-modal-download" download>Download File</a>
+        <button id="export-modal-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script src="symbols.js"></script>
   <script src="app.js"></script>
 </body>

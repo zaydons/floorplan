@@ -218,6 +218,13 @@ const measureEditInput = document.getElementById('measureEditInput');
 const measureEditUnit  = document.getElementById('measureEditUnit');
 const modalOverlay    = document.getElementById('modal-overlay');
 const modalInput      = document.getElementById('modal-input');
+const exportModalOverlay  = document.getElementById('export-modal-overlay');
+const exportModalTitle    = document.getElementById('export-modal-title');
+const exportModalHint     = document.getElementById('export-modal-hint');
+const exportModalBody     = document.getElementById('export-modal-body');
+const exportModalCopyBtn  = document.getElementById('export-modal-copy');
+const exportModalDownload = document.getElementById('export-modal-download');
+const exportModalCloseBtn = document.getElementById('export-modal-close');
 const textPropRow     = document.getElementById('textPropRow');
 const stairsPropRow   = document.getElementById('stairsPropRow');
 const wallPropRow     = document.getElementById('wallPropRow');
@@ -2320,12 +2327,12 @@ document.getElementById('exportBtn').addEventListener('click', exportPNG);
 function saveFile() {
   const data = JSON.stringify({ layers: state.layers, scale: state.scale, snapDivisions: state.snapDivisions }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = 'floorplan.json';
-  a.click();
-  URL.revokeObjectURL(url);
+  triggerDownload(blob, 'floorplan.json', {
+    title: 'Export JSON',
+    hint: 'If the download didn’t start automatically, click Download File below, or copy the JSON to save it yourself.',
+    body: 'text',
+    text: data,
+  });
 }
 
 function loadFile(e) {
@@ -2393,11 +2400,35 @@ function exportPNG() {
   ctx.restore();
 
   tmp.toBlob(blob => {
-    const url = URL.createObjectURL(blob);
-    const a   = document.createElement('a');
-    a.href    = url; a.download = 'floorplan.png'; a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, 'floorplan.png', {
+      title: 'Export PNG',
+      hint: 'If the download didn’t start automatically, click Download File below, or right-click the image and choose “Save image as…”.',
+      body: 'image',
+    });
   });
+}
+
+// Triggers a normal browser download, and — only when this page is running
+// inside an iframe (e.g. a preview/embed) — also opens a fallback modal.
+// A sandboxed iframe without allow-downloads can block both a script-driven
+// click() *and* a genuine direct click on a download link with no error at
+// all, so there's no reliable way to detect success; showing the fallback
+// whenever we're embedded is the only way to guarantee the data is reachable.
+function triggerDownload(blob, filename, fallback) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  let embedded = true;
+  try { embedded = window.self !== window.top; } catch { embedded = true; }
+
+  if (!embedded) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  showExportModal({ ...fallback, url, filename });
 }
 
 // ── Modal (prompt / confirm / alert) ────────────────────────────────────────
@@ -2466,6 +2497,55 @@ function confirmModal(message, title = 'Confirm') {
 // Resolves once dismissed (rarely needs awaiting — fire-and-forget is fine).
 function alertModal(message, title = 'Notice') {
   return showModal({ title, message, showInput: false, showCancel: false });
+}
+
+// Fallback UI for triggerDownload() — see the comment there for why this
+// exists. body is 'image' (shows the blob as a picture to save/right-click)
+// or 'text' (shows it in a selectable textarea with a Copy button).
+function showExportModal({ title, hint, body, url, filename, text }) {
+  exportModalTitle.textContent = title;
+  exportModalHint.textContent  = hint;
+  exportModalBody.innerHTML    = '';
+
+  if (body === 'image') {
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = filename;
+    exportModalBody.appendChild(img);
+    exportModalCopyBtn.style.display = 'none';
+  } else {
+    const ta = document.createElement('textarea');
+    ta.readOnly = true;
+    ta.value = text;
+    exportModalBody.appendChild(ta);
+    exportModalCopyBtn.style.display = 'inline-block';
+    exportModalCopyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        exportModalCopyBtn.textContent = 'Copied!';
+      } catch {
+        ta.focus();
+        ta.select();
+        try { document.execCommand('copy'); exportModalCopyBtn.textContent = 'Copied!'; }
+        catch { exportModalCopyBtn.textContent = 'Select the text and press Ctrl+C'; }
+      }
+      setTimeout(() => { exportModalCopyBtn.textContent = 'Copy to Clipboard'; }, 1500);
+    };
+  }
+
+  exportModalDownload.href = url;
+  exportModalDownload.download = filename;
+
+  const close = () => {
+    exportModalOverlay.style.display = 'none';
+    document.removeEventListener('keydown', keydown);
+    URL.revokeObjectURL(url);
+  };
+  const keydown = e => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  exportModalCloseBtn.onclick = close;
+  document.addEventListener('keydown', keydown);
+
+  exportModalOverlay.style.display = 'flex';
 }
 
 // ── Layer UI ──────────────────────────────────────────────────────────────────
