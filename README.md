@@ -65,6 +65,10 @@ No package.json, no dependencies, no bundler — `app.js` and `symbols.js` are l
 
 Built on the 2D Canvas API; any current version of Chrome, Firefox, Safari, or Edge works. No IE support.
 
+## Icons
+
+Toolbar icons are from Google's [Material Symbols](https://fonts.google.com/icons), licensed under [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
 ## License
 
 [MIT](LICENSE)

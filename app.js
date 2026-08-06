@@ -1908,6 +1908,12 @@ function onPointerDown(e) {
   }
 
   if (state.tool === 'text') {
+    // Same fix as the measurement-label editor below: canvas isn't
+    // focusable, so mousedown's default action steals focus right back
+    // from the textarea openTextInput() just focused, which then blurs
+    // it, and since it's empty at that point the blur handler hides it
+    // again — text placement silently no-ops without this.
+    if (typeof e.preventDefault === 'function') e.preventDefault();
     openTextInput(pos);
     return;
   }
@@ -2309,7 +2315,7 @@ document.getElementById('propFillEnabled').addEventListener('change', e => {
 
 document.getElementById('stairsDirBtn').addEventListener('click', function () {
   state.props.stairsDirection = state.props.stairsDirection === 'up' ? 'down' : 'up';
-  this.textContent = state.props.stairsDirection === 'up' ? '⇅ UP' : '⇅ DN';
+  document.getElementById('stairsDirLabel').textContent = state.props.stairsDirection === 'up' ? 'UP' : 'DN';
   let changed = false;
   for (const sid of state.selection) {
     const found = findShapeById(sid);
@@ -2676,8 +2682,8 @@ function renderLayerRows(nodes, depth) {
     const vis = document.createElement('div');
     vis.className = 'layer-visibility';
     vis.innerHTML = layer.visible
-      ? `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
-      : `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+      ? `<svg viewBox="0 -960 960 960" width="16" height="16"><path d="M607.5-372.5Q660-425 660-500t-52.5-127.5Q555-680 480-680t-127.5 52.5Q300-575 300-500t52.5 127.5Q405-320 480-320t127.5-52.5Zm-204-51Q372-455 372-500t31.5-76.5Q435-608 480-608t76.5 31.5Q588-545 588-500t-31.5 76.5Q525-392 480-392t-76.5-31.5ZM214-281.5Q94-363 40-500q54-137 174-218.5T480-800q146 0 266 81.5T920-500q-54 137-174 218.5T480-200q-146 0-266-81.5ZM480-500Zm207.5 160.5Q782-399 832-500q-50-101-144.5-160.5T480-720q-113 0-207.5 59.5T128-500q50 101 144.5 160.5T480-280q113 0 207.5-59.5Z" fill="currentColor"/></svg>`
+      : `<svg viewBox="0 -960 960 960" width="16" height="16"><path d="m644-428-58-58q9-47-27-88t-93-32l-58-58q17-8 34.5-12t37.5-4q75 0 127.5 52.5T660-500q0 20-4 37.5T644-428Zm128 126-58-56q38-29 67.5-63.5T832-500q-50-101-143.5-160.5T480-720q-29 0-57 4t-55 12l-62-62q41-17 84-25.5t90-8.5q151 0 269 83.5T920-500q-23 59-60.5 109.5T772-302Zm20 246L624-222q-35 11-70.5 16.5T480-200q-151 0-269-83.5T40-500q21-53 53-98.5t73-81.5L56-792l56-56 736 736-56 56ZM222-624q-29 26-53 57t-41 67q50 101 143.5 160.5T480-280q20 0 39-2.5t39-5.5l-36-38q-11 3-21 4.5t-21 1.5q-75 0-127.5-52.5T300-500q0-11 1.5-21t4.5-21l-84-82Zm319 93Zm-151 75Z" fill="currentColor"/></svg>`;
     vis.title = layer.visible ? 'Hide (also hides sub-layers)' : 'Show';
     vis.addEventListener('click', e => { e.stopPropagation(); layer.visible = !layer.visible; renderLayers(); redrawMain(); });
 
@@ -2691,8 +2697,8 @@ function renderLayerRows(nodes, depth) {
     const lockBtn = document.createElement('div');
     lockBtn.className = 'layer-lock' + (layer.locked ? ' locked' : '');
     lockBtn.innerHTML = layer.locked
-      ? `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10.5" width="14" height="9.5" rx="1.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>`
-      : `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="10.5" width="14" height="9.5" rx="1.5"/><path d="M8 10.5V7a4 4 0 0 1 7.5-1.8"/></svg>`;
+      ? `<svg viewBox="0 -960 960 960" width="14" height="14"><path d="M240-80q-33 0-56.5-23.5T160-160v-400q0-33 23.5-56.5T240-640h40v-80q0-83 58.5-141.5T480-920q83 0 141.5 58.5T680-720v80h40q33 0 56.5 23.5T800-560v400q0 33-23.5 56.5T720-80H240Zm0-80h480v-400H240v400Zm296.5-143.5Q560-327 560-360t-23.5-56.5Q513-440 480-440t-56.5 23.5Q400-393 400-360t23.5 56.5Q447-280 480-280t56.5-23.5ZM360-640h240v-80q0-50-35-85t-85-35q-50 0-85 35t-35 85v80ZM240-160v-400 400Z" fill="currentColor"/></svg>`
+      : `<svg viewBox="0 -960 960 960" width="14" height="14"><path d="M240-640h360v-80q0-50-35-85t-85-35q-50 0-85 35t-35 85h-80q0-83 58.5-141.5T480-920q83 0 141.5 58.5T680-720v80h40q33 0 56.5 23.5T800-560v400q0 33-23.5 56.5T720-80H240q-33 0-56.5-23.5T160-160v-400q0-33 23.5-56.5T240-640Zm0 480h480v-400H240v400Zm296.5-143.5Q560-327 560-360t-23.5-56.5Q513-440 480-440t-56.5 23.5Q400-393 400-360t23.5 56.5Q447-280 480-280t56.5-23.5ZM240-160v-400 400Z" fill="currentColor"/></svg>`;
     lockBtn.title = layer.locked ? 'Locked — click to unlock' : 'Unlocked — click to lock (also locks sub-layers)';
     lockBtn.addEventListener('click', e => {
       e.stopPropagation();
