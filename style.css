@@ -219,6 +219,41 @@ body {
   border-color: var(--accent);
 }
 
+.panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.panel-header .panel-collapse-btn {
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.panel-header .panel-collapse-btn:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+.panel-collapse-btn svg {
+  transition: transform 0.15s;
+}
+
+.panel.collapsed .panel-collapse-btn svg {
+  transform: rotate(-90deg);
+}
+
+.panel.collapsed > *:not(.panel-header) {
+  display: none;
+}
+
 .panel-body {
   padding: 10px 12px;
 }

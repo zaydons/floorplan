@@ -2548,6 +2548,28 @@ function showExportModal({ title, hint, body, url, filename, text }) {
   exportModalOverlay.style.display = 'flex';
 }
 
+// ── Collapsible sidebar panels ──────────────────────────────────────────────
+const PANEL_COLLAPSE_KEY = 'floorplan-panels-collapsed-v1';
+
+function loadCollapsedPanels() {
+  try { return JSON.parse(localStorage.getItem(PANEL_COLLAPSE_KEY)) || {}; }
+  catch { return {}; }
+}
+
+document.querySelectorAll('.panel').forEach(panel => {
+  const toggleHandle = panel.querySelector('.panel-header-left');
+  if (!toggleHandle) return;
+
+  if (loadCollapsedPanels()[panel.id]) panel.classList.add('collapsed');
+
+  toggleHandle.addEventListener('click', () => {
+    panel.classList.toggle('collapsed');
+    const collapsed = loadCollapsedPanels();
+    collapsed[panel.id] = panel.classList.contains('collapsed');
+    try { localStorage.setItem(PANEL_COLLAPSE_KEY, JSON.stringify(collapsed)); } catch {}
+  });
+});
+
 // ── Layer UI ──────────────────────────────────────────────────────────────────
 document.getElementById('addLayerBtn').addEventListener('click', async () => {
   const val = await promptModal('New Layer', '');
