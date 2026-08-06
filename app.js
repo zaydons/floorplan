@@ -624,10 +624,7 @@ async function clearAutosaveAndReset() {
   try { localStorage.removeItem(AUTOSAVE_KEY); } catch {}
   state.layers = [];
   state.selection = [];
-  addLayer('Base / Walls', '#e0e0e0');
-  addLayer('Windows & Doors', '#6ab8ff');
-  addLayer('In-Floor Heat', '#ff976a');
-  addLayer('Electrical', '#ffca6a');
+  addLayer('Base', '#e0e0e0');
   state.history = [snapshot()];
   state.future = [];
   renderLayers();
@@ -2937,10 +2934,7 @@ function init() {
 
   const restored = tryRestoreAutosave();
   if (!restored) {
-    addLayer('Base / Walls', '#e0e0e0');
-    addLayer('Windows & Doors', '#6ab8ff');
-    addLayer('In-Floor Heat', '#ff976a');
-    addLayer('Electrical', '#ffca6a');
+    addLayer('Base', '#e0e0e0');
   } else {
     state.activeLayerId = state.layers[0]?.id || null;
   }
