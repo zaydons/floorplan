@@ -350,13 +350,31 @@ function getCanvasPos(e, excludeIds) {
   return { sx, sy, wx, wy, rawX: w.x, rawY: w.y };
 }
 
+// Logical (CSS-pixel) canvas size, kept in sync by resizeCanvases(). All the
+// pan/zoom/hit-test math in this file works in these units — the canvases'
+// actual backing-store pixel counts are DPR times bigger (see below) so
+// rendering stays crisp on Retina/high-DPI displays, but nothing else needs
+// to know that.
+let VIEW_W = 0, VIEW_H = 0;
+
+function getDPR() {
+  return window.devicePixelRatio || 1;
+}
+
 function resizeCanvases() {
   const container = document.getElementById('canvas-container');
   const W = container.clientWidth;
   const H = container.clientHeight;
+  const dpr = getDPR();
+  VIEW_W = W; VIEW_H = H;
   [gridCanvas, mainCanvas, overlayCanvas].forEach(c => {
-    c.width  = W;
-    c.height = H;
+    c.width  = W * dpr;
+    c.height = H * dpr;
+    // Setting width/height resets the transform to identity, so this is a
+    // one-time-per-resize scale, not a cumulative one. Everything else in
+    // this file keeps drawing in logical (CSS) pixels; this is the only
+    // place that has to think about physical pixels.
+    c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
   });
   redrawAll();
 }
@@ -1413,8 +1431,8 @@ measureEditInput.addEventListener('blur', () => {
 
 // ── Render ────────────────────────────────────────────────────────────────────
 function redrawGrid() {
-  const W = gridCanvas.width;
-  const H = gridCanvas.height;
+  const W = VIEW_W;
+  const H = VIEW_H;
   gCtx.clearRect(0, 0, W, H);
   if (!state.showGrid) return;
 
@@ -1466,8 +1484,8 @@ function redrawGrid() {
 }
 
 function redrawMain() {
-  const W = mainCanvas.width;
-  const H = mainCanvas.height;
+  const W = VIEW_W;
+  const H = VIEW_H;
   mCtx.clearRect(0, 0, W, H);
   mCtx.save();
   mCtx.translate(state.pan.x, state.pan.y);
@@ -1489,8 +1507,8 @@ function redrawMain() {
 }
 
 function redrawOverlay() {
-  const W = overlayCanvas.width;
-  const H = overlayCanvas.height;
+  const W = VIEW_W;
+  const H = VIEW_H;
   oCtx.clearRect(0, 0, W, H);
 
   // Symbol placement preview
@@ -2239,22 +2257,32 @@ moveToLayerSel.addEventListener('change', () => {
 });
 
 function updateMoveToLayer() {
-  const options = [];
+  moveToLayerSel.innerHTML = '';
+  // Built with createElement/textContent rather than innerHTML — layer
+  // names can come from a loaded .json file, not just typed input, so they
+  // have to be treated as untrusted text rather than interpolated as HTML.
   (function walk(nodes, depth) {
     for (const node of nodes) {
-      const indent = '&nbsp;&nbsp;'.repeat(depth) + (depth ? '↳ ' : '');
-      options.push(`<option value="${node.id}">${indent}${node.name}</option>`);
+      const indent = '  '.repeat(depth) + (depth ? '↳ ' : '');
+      const opt = document.createElement('option');
+      opt.value = node.id;
+      opt.textContent = indent + node.name;
+      moveToLayerSel.appendChild(opt);
       if (node.children && node.children.length) walk(node.children, depth + 1);
     }
   })(state.layers, 0);
-  moveToLayerSel.innerHTML = options.join('');
 }
 
 // ── Properties panel ──────────────────────────────────────────────────────────
 function bindProp(id, key, transform) {
   const el = document.getElementById(id);
   el.addEventListener('input', () => {
-    state.props[key] = transform ? transform(el.value) : el.value;
+    const value = transform ? transform(el.value) : el.value;
+    // A numeric field mid-edit (e.g. cleared to retype) fires 'input' with
+    // '' -> NaN; ignore that rather than writing NaN onto every selected
+    // shape (it survives a save/reload as null, silently zeroing a stroke).
+    if (transform && !Number.isFinite(value)) return;
+    state.props[key] = value;
     // Update selected shapes
     for (const sid of state.selection) {
       const found = findShapeById(sid);
@@ -2332,30 +2360,69 @@ function saveFile() {
   });
 }
 
+// Validates and backfills a parsed layer tree from a loaded .json file.
+// Returns null if the structure is unrecoverable. Missing-but-defaultable
+// fields (locked/expanded/etc., absent in older saves) are backfilled
+// rather than rejected, so older exports still load.
+function normalizeLoadedLayers(nodes, seen = new Set()) {
+  if (!Array.isArray(nodes)) return null;
+  const out = [];
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') return null;
+    let id = typeof raw.id === 'string' && raw.id && !seen.has(raw.id) ? raw.id : uid();
+    seen.add(id);
+    const children = raw.children ? normalizeLoadedLayers(raw.children, seen) : [];
+    if (children === null) return null;
+    out.push({
+      id,
+      name: typeof raw.name === 'string' && raw.name ? raw.name : 'Layer',
+      visible: raw.visible !== false,
+      color: typeof raw.color === 'string' ? raw.color : LAYER_COLORS[0],
+      shapes: Array.isArray(raw.shapes) ? raw.shapes : [],
+      children,
+      expanded: raw.expanded !== false,
+      locked: !!raw.locked,
+    });
+  }
+  return out;
+}
+
 function loadFile(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = evt => {
+    // Snapshot so a failure partway through (bad structure, or a render
+    // that throws on malformed shape data) can't leave state pointing at
+    // a half-applied file — restore this instead of leaving it wherever
+    // the exception happened to land.
+    const backup = { layers: state.layers, activeLayerId: state.activeLayerId, selection: state.selection };
     try {
-      const data = JSON.parse(evt.target.result);
-      if (data.layers) {
-        state.layers        = data.layers;
-        state.activeLayerId = state.layers[0]?.id || null;
-        state.selection     = [];
-        if (data.scale) {
-          Object.assign(state.scale, data.scale);
-        }
-        if (data.snapDivisions) {
-          state.snapDivisions = data.snapDivisions;
-        }
-        syncScaleUI();
-        saveHistory();
-        renderLayers();
-        updateMoveToLayer();
-        redrawAll();
+      const data   = JSON.parse(evt.target.result);
+      const layers = normalizeLoadedLayers(data.layers);
+      if (!layers || !layers.length) throw new Error('no valid layers');
+
+      state.layers        = layers;
+      state.activeLayerId = layers[0].id;
+      state.selection     = [];
+      if (data.scale && typeof data.scale === 'object') {
+        Object.assign(state.scale, data.scale);
       }
+      if (data.snapDivisions) {
+        state.snapDivisions = data.snapDivisions;
+      }
+      syncScaleUI();
+      saveHistory();
+      renderLayers();
+      updateMoveToLayer();
+      redrawAll();
     } catch {
+      state.layers        = backup.layers;
+      state.activeLayerId = backup.activeLayerId;
+      state.selection     = backup.selection;
+      renderLayers();
+      updateMoveToLayer();
+      redrawAll();
       alertModal('That file doesn\'t look like a valid floorplan JSON file.', 'Invalid File');
     }
   };
@@ -2364,11 +2431,13 @@ function loadFile(e) {
 }
 
 function exportPNG() {
-  const W = mainCanvas.width;
-  const H = mainCanvas.height;
+  const W   = VIEW_W;
+  const H   = VIEW_H;
+  const dpr = getDPR();
   const tmp = document.createElement('canvas');
-  tmp.width  = W; tmp.height = H;
+  tmp.width  = W * dpr; tmp.height = H * dpr;
   const ctx  = tmp.getContext('2d');
+  ctx.scale(dpr, dpr); // match on-screen crispness, same reasoning as resizeCanvases()
   ctx.fillStyle = '#141422';
   ctx.fillRect(0, 0, W, H);
 
