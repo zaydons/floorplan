@@ -250,6 +250,20 @@ body {
   transform: rotate(-90deg);
 }
 
+/* Some panels (Symbols) carry their own min-height/flex-basis/max-height
+   so their content area has reasonable room when expanded. Collapsing
+   only hides the content — these sizing constraints are still on the
+   panel box itself, so they need to be cleared too or the empty box
+   lingers at whatever height the panel was pinned to. An #id selector
+   (like #symbols-panel) outranks a .panel.collapsed class pair no matter
+   how many classes pile up, so this needs to match id-for-id. */
+.panel.collapsed,
+#symbols-panel.collapsed {
+  min-height: 0;
+  max-height: none;
+  flex-basis: auto;
+}
+
 .panel.collapsed > *:not(.panel-header) {
   display: none;
 }
