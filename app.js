@@ -623,6 +623,7 @@ function tryRestoreAutosave() {
   try {
     const data = JSON.parse(raw);
     if (!data.layers || !data.layers.length) return false;
+    dedupeShapePoints(data.layers);
     state.layers        = data.layers;
     state.activeLayerId = data.layers[0]?.id || null;
     if (data.scale) Object.assign(state.scale, data.scale);
@@ -2376,6 +2377,33 @@ function saveFile() {
   });
 }
 
+// Repairs wall/polygon shapes carrying a duplicate point back-to-back in
+// their points array — the signature of the double-click-finish bug (fixed
+// in commitPolygon/onDblClick) that let a plain "click start, double-click
+// end" wall draw record its end point twice. That's invisible on its own
+// (a zero-length trailing segment doesn't render or label), but corrupts
+// the shape permanently once saved, so already-saved floorplans need this
+// healing pass on load rather than just relying on the fix at draw time.
+function dedupeShapePoints(layers) {
+  function walk(nodes) {
+    for (const node of nodes) {
+      for (const shape of node.shapes || []) {
+        if ((shape.type === 'wall' || shape.type === 'polygon') && Array.isArray(shape.points) && shape.points.length > 1) {
+          const cleaned = [shape.points[0]];
+          for (let i = 1; i < shape.points.length; i++) {
+            const p = shape.points[i];
+            const prev = cleaned[cleaned.length - 1];
+            if (Math.hypot(p.x - prev.x, p.y - prev.y) > 0.001) cleaned.push(p);
+          }
+          shape.points = cleaned;
+        }
+      }
+      if (node.children && node.children.length) walk(node.children);
+    }
+  }
+  walk(layers);
+}
+
 // Validates and backfills a parsed layer tree from a loaded .json file.
 // Returns null if the structure is unrecoverable. Missing-but-defaultable
 // fields (locked/expanded/etc., absent in older saves) are backfilled
@@ -2417,6 +2445,7 @@ function loadFile(e) {
       const data   = JSON.parse(evt.target.result);
       const layers = normalizeLoadedLayers(data.layers);
       if (!layers || !layers.length) throw new Error('no valid layers');
+      dedupeShapePoints(layers);
 
       state.layers        = layers;
       state.activeLayerId = layers[0].id;
