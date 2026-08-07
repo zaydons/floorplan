@@ -737,8 +737,8 @@ function drawShape(ctx, shape, layerColor, scale = 1) {
       // that's what makes it read as a wall instead of just a line.
       ctx.save();
       ctx.setLineDash([]);
-      ctx.lineJoin    = 'round';
-      ctx.lineCap     = 'round';
+      ctx.lineJoin    = 'miter';
+      ctx.lineCap     = 'butt';
       ctx.strokeStyle = shape.stroke;
       ctx.lineWidth   = shape.thickness || 12;
       ctx.beginPath();
