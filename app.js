@@ -1725,7 +1725,9 @@ function updateShape(shape, wx, wy, e) {
 }
 
 function commitPolygon(closed = false) {
-  if (!drag.polyPoints.length) return;
+  // A single point (or none) isn't a valid line/wall/polygon segment - e.g.
+  // double-clicking with no prior click, after the dblclick dedup above.
+  if (drag.polyPoints.length < 2) { drag.polyPoints = []; redrawOverlay(); return; }
   const layer = activeLayer();
   if (!layer || isLayerEffectivelyLocked(layer.id)) { drag.polyPoints = []; redrawOverlay(); return; }
   const isWall = state.tool === 'wall';
@@ -2094,6 +2096,14 @@ function onPointerUp(e) {
 
 function onDblClick(e) {
   if (state.tool === 'polygon' || state.tool === 'wall') {
+    // dblclick only fires after BOTH of its constituent mousedowns have
+    // already run through onPointerDown, which pushes a point per
+    // mousedown — so by now drag.polyPoints has one extra point at
+    // (essentially) the same spot as the point before it. Drop it before
+    // finishing, or a plain "click start, double-click end" draw leaves a
+    // hidden near-zero-length trailing segment that only becomes visible
+    // (and wrong) the next time the shape's last real segment is resized.
+    if (drag.polyPoints.length > 1) drag.polyPoints.pop();
     commitPolygon(false);
   }
 }
