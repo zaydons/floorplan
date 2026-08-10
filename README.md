@@ -6,7 +6,7 @@ A browser-based floorplan drawing tool — draw walls, rooms, and stairs to scal
 
 ## Features
 
-- **Drawing tools** — line, rectangle, polygon, circle, text, and a dedicated wall tool (click to place points, double-click or right-click to finish) with a configurable real-world thickness
+- **Drawing tools** — line, rectangle, polygon, circle, text, and a dedicated wall tool (click to place points, double-click or right-click to finish) with a configurable real-world thickness and alignment (Center/Left/Right — Left/Right build all of the thickness to one side of the line you draw, so tracing a room's interior boundary gives you that exact clear interior size instead of losing half of every wall's thickness into the room)
 - **Stairs tool** with a toggleable up/down direction indicator
 - **44 symbols across 9 categories** — outlets, switches, lighting, panels, HVAC, plumbing, furniture, openings, and detectors/misc. — placed at true real-world size and independently resizable/rotatable per placement (e.g. a couch isn't a square)
 - **Layers** with nested sub-layers, per-layer visibility and lock, and color coding. Only the active layer is editable at a time — click a layer in the sidebar to switch to it; every other layer is dimmed on canvas and implicitly locked until you switch back

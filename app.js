@@ -184,6 +184,7 @@ const state = {
     symbolSize: 40,
     stairsDirection: 'up',
     wallThickness: 12,
+    wallAlignment: 'center',
   },
 };
 
@@ -228,6 +229,7 @@ const exportModalCloseBtn = document.getElementById('export-modal-close');
 const textPropRow     = document.getElementById('textPropRow');
 const stairsPropRow   = document.getElementById('stairsPropRow');
 const wallPropRow     = document.getElementById('wallPropRow');
+const wallAlignPropRow = document.getElementById('wallAlignPropRow');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function uid() {
@@ -682,6 +684,54 @@ function applyStyle(ctx, shape, layerColor, scale) {
   else ctx.setLineDash([]);
 }
 
+// Offsets an open polyline by `distance` along the left-hand normal of its
+// direction of travel (screen space, y-down, so the left normal of a
+// segment (dx,dy) is (dy,-dx)/len — walking east, "left" points up-screen).
+// Interior vertices get a mitered join (intersecting the two adjacent
+// offset segment lines, same idea as the canvas miter this replaces for
+// non-center wall alignment); the open ends get a plain perpendicular
+// offset, matching the wall's butt caps. Only used for open walls — a
+// closed wall loop still renders with the original centered stroke
+// regardless of alignment, since a true offset "ring" needs hole-aware
+// winding this doesn't attempt.
+function offsetPolyline(points, distance) {
+  const n = points.length;
+  if (n < 2 || Math.abs(distance) < 1e-9) return points.map(p => ({ x: p.x, y: p.y }));
+
+  const segs = [];
+  for (let i = 0; i < n - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = (dy / len) * distance, ny = (-dx / len) * distance;
+    segs.push({ a: { x: a.x + nx, y: a.y + ny }, b: { x: b.x + nx, y: b.y + ny }, dx, dy });
+  }
+
+  const lineIntersect = (p1, d1, p2, d2) => {
+    const denom = d1.x * d2.y - d1.y * d2.x;
+    if (Math.abs(denom) < 1e-9) return null;
+    const t = ((p2.x - p1.x) * d2.y - (p2.y - p1.y) * d2.x) / denom;
+    return { x: p1.x + d1.x * t, y: p1.y + d1.y * t };
+  };
+
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    if (i === 0) { out.push({ ...segs[0].a }); continue; }
+    if (i === n - 1) { out.push({ ...segs[n - 2].b }); continue; }
+    const s1 = segs[i - 1], s2 = segs[i];
+    const inter = lineIntersect(s1.a, { x: s1.dx, y: s1.dy }, s2.a, { x: s2.dx, y: s2.dy });
+    // Guard against a degenerate (near-parallel) or extreme (sharp near-
+    // reversal) miter sending the intersection far off — fall back to the
+    // midpoint of the two segment ends rather than let the fill spike out.
+    if (inter && Math.hypot(inter.x - points[i].x, inter.y - points[i].y) < Math.abs(distance) * 20) {
+      out.push(inter);
+    } else {
+      out.push({ x: (s1.b.x + s2.a.x) / 2, y: (s1.b.y + s2.a.y) / 2 });
+    }
+  }
+  return out;
+}
+
 function drawShape(ctx, shape, layerColor, scale = 1) {
   ctx.save();
   applyStyle(ctx, shape, layerColor, scale);
@@ -731,21 +781,43 @@ function drawShape(ctx, shape, layerColor, scale = 1) {
     case 'wall': {
       if (!shape.points || shape.points.length < 2) break;
       const pts = shape.closed ? [...shape.points, shape.points[0]] : shape.points;
+      const thickness = shape.thickness || 12;
+      const alignment = shape.alignment || 'center';
 
       // Rendered as a thick filled band (real-world thickness, so it scales
       // with zoom like any other geometry) rather than a thin outline —
-      // that's what makes it read as a wall instead of just a line.
-      ctx.save();
-      ctx.setLineDash([]);
-      ctx.lineJoin    = 'miter';
-      ctx.lineCap     = 'butt';
-      ctx.strokeStyle = shape.stroke;
-      ctx.lineWidth   = shape.thickness || 12;
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-      ctx.stroke();
-      ctx.restore();
+      // that's what makes it read as a wall instead of just a line. Left/
+      // right alignment puts all of that thickness on one side of the
+      // drawn line instead of splitting it — the drawn line becomes the
+      // wall's actual face, so tracing a room's interior boundary gives
+      // you that exact interior clear size instead of losing half the
+      // thickness of every wall into the room.
+      if ((alignment === 'left' || alignment === 'right') && !shape.closed) {
+        const far = alignment === 'left' ? thickness : -thickness;
+        const farPts = offsetPolyline(shape.points, far);
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.fillStyle = shape.stroke;
+        ctx.beginPath();
+        ctx.moveTo(shape.points[0].x, shape.points[0].y);
+        for (let i = 1; i < shape.points.length; i++) ctx.lineTo(shape.points[i].x, shape.points[i].y);
+        for (let i = farPts.length - 1; i >= 0; i--) ctx.lineTo(farPts[i].x, farPts[i].y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else {
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.lineJoin    = 'miter';
+        ctx.lineCap     = 'butt';
+        ctx.strokeStyle = shape.stroke;
+        ctx.lineWidth   = thickness;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       // Thin centerline edges for a crisp double-line look at any zoom
       ctx.save();
@@ -881,7 +953,10 @@ function shapeBounds(shape) {
     }
     case 'wall': {
       if (!shape.points.length) return { x: 0, y: 0, w: 0, h: 0 };
-      const pad = Math.max(4, (shape.thickness || 12) / 2 + 2);
+      // Full thickness (not half) as padding — left/right alignment puts
+      // the whole band on one side of the drawn points, not split evenly,
+      // so a tighter box could clip the clickable/visible area off-center.
+      const pad = Math.max(4, (shape.thickness || 12) + 2);
       const xs = shape.points.map(p => p.x);
       const ys = shape.points.map(p => p.y);
       const minX = Math.min(...xs), maxX = Math.max(...xs);
@@ -1676,6 +1751,7 @@ function setTool(tool) {
   textPropRow.style.display   = tool === 'text' ? 'flex' : 'none';
   stairsPropRow.style.display = tool === 'stairs' ? 'flex' : 'none';
   wallPropRow.style.display   = tool === 'wall' ? 'flex' : 'none';
+  wallAlignPropRow.style.display = tool === 'wall' ? 'flex' : 'none';
   if (tool === 'wall') syncWallThicknessUI();
   if (tool !== 'sym') redrawOverlay();
 }
@@ -1738,7 +1814,7 @@ function commitPolygon(closed = false) {
     points: [...drag.polyPoints],
     closed,
   };
-  if (isWall) shape.thickness = state.props.wallThickness;
+  if (isWall) { shape.thickness = state.props.wallThickness; shape.alignment = state.props.wallAlignment; }
   layer.shapes.push(shape);
   drag.polyPoints = [];
   saveHistory();
@@ -2981,6 +3057,17 @@ function initWallControls() {
       }
       if (changed) { saveHistory(); redrawMain(); }
     }
+  });
+
+  document.getElementById('wallAlign').value = state.props.wallAlignment;
+  document.getElementById('wallAlign').addEventListener('change', e => {
+    state.props.wallAlignment = e.target.value;
+    let changed = false;
+    for (const sid of state.selection) {
+      const found = findShapeById(sid);
+      if (found && found.shape.type === 'wall') { found.shape.alignment = e.target.value; changed = true; }
+    }
+    if (changed) { saveHistory(); redrawMain(); }
   });
 }
 

@@ -190,6 +190,14 @@
               <input type="number" id="wallThickness" min="0.5" max="100000" step="0.5" value="12" title="Wall thickness (world units)">
               <span id="wallThicknessHint" class="sym-size-hint"></span>
             </div>
+            <div class="prop-row" id="wallAlignPropRow" style="display:none">
+              <label>Align</label>
+              <select id="wallAlign" title="Which side of the drawn line the thickness builds on. Left/Right are relative to the direction you drew the wall, from its first point to its last.">
+                <option value="center">Center</option>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+              </select>
+            </div>
             <div id="selectionProps" style="display:none">
               <hr>
               <div class="prop-row">
